@@ -26,6 +26,12 @@
 ##
 
 ## $Log: SimpleServer.pm,v $
+## Revision 1.12  2002/03/05 20:52:22  sondberg
+## Version 0.05 so that we can release the thing at CPAN.
+##
+## Revision 1.11  2002/03/05 20:49:56  sondberg
+## Added a couple of lines of documentation.
+##
 ## Revision 1.10  2002/02/28 11:21:57  mike
 ## Add RPN structure to search-handler argument hash.
 ##
@@ -64,7 +70,7 @@ require AutoLoader;
 @EXPORT = qw(
 	
 );
-$VERSION = '0.04';
+$VERSION = '0.05';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -296,6 +302,8 @@ mous hash. The structure is the following:
 	     DATABASES =>  ["xxx"], ## Reference to a list of data-
 				    ## bases to search
 	     QUERY     =>  "query", ## The query expression
+	     RPN       =>  $obj,    ## Blessed reference int the package
+	     			    ## Net::Z3950::APDU::Query
 
 				    ## Response parameters:
 
@@ -339,6 +347,11 @@ need to support anymore functionality than you want to. For instance,
 it is perfectly legal to not accept boolean operators, but you SHOULD
 try to return good error codes if you run into something you can't or
 won't support.
+
+The RPN member is a blessed reference into the package Net::Z3950::APDU::Query.
+By means of an augmented type of coding, you can easily construct a
+parser of the incoming RPN. Take a look at samples/render-search.pl for
+a sample implementation of such an augmented parser technique. 
 
 =head2 Present handler
 
@@ -495,7 +508,7 @@ or something similar, this is the place to do it.
 =head1 AUTHORS
 
 Anders Sønderberg (sondberg@indexdata.dk) and Sebastian Hammer
-(quinn@indexdata.dk).
+(quinn@indexdata.dk). Substantial contributions made by Mike Taylor (mike@tecc.co.uk).
 
 =head1 SEE ALSO
 
