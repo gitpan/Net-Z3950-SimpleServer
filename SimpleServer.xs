@@ -25,6 +25,12 @@
  */
 
 /*$Log: SimpleServer.xs,v $
+/*Revision 1.16  2002/11/26 17:09:18  mike
+/*basic support for idPass authentication
+/*
+/*Revision 1.15  2002/09/16 13:55:53  sondberg
+/*Added support for authentication into SimpleServer.
+/*
 /*Revision 1.14  2002/03/05 00:34:13  mike
 /*Support for implementation_id (commented out until it's
 /*in mainstream Yaz)
@@ -1111,6 +1117,8 @@ bend_initresult *bend_init(bend_initrequest *q)
 	/*char *name_ptr;
 	char *ver_ptr;*/
 	char *ptr;
+	char *user = NULL;
+	char *passwd = NULL;
 
 	dSP;
 	ENTER;
@@ -1143,6 +1151,24 @@ bend_initresult *bend_init(bend_initrequest *q)
 	hv_store(href, "PEER_NAME", 9, newSVpv(q->peer_name, 0), 0);
 	hv_store(href, "HANDLE", 6, newSVsv(&sv_undef), 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
+	if (q->auth) {
+	    if (q->auth->which == Z_IdAuthentication_open) {
+		char *openpass = xstrdup (q->auth->u.open);
+		char *cp = strchr (openpass, '/');
+		if (cp) {
+		    *cp = '\0';
+		    user = nmem_strdup (odr_getmem (q->stream), openpass);
+		    passwd = nmem_strdup (odr_getmem (q->stream), cp + 1);
+		}
+		xfree(openpass);
+	    } else if (q->auth->which == Z_IdAuthentication_idPass) {
+		user = q->auth->u.idPass->userId;
+		passwd = q->auth->u.idPass->password;
+	    }
+	    /* ### some code paths have user/password unassigned here */
+	    hv_store(href, "USER", 4, newSVpv(user, 0), 0);
+	    hv_store(href, "PASS", 4, newSVpv(passwd, 0), 0);
+	}
 
 	PUSHMARK(sp);	
 
