@@ -1,8 +1,12 @@
 use ExtUtils::MakeMaker;
-# See lib/ExtUtils/MakeMaker.pm for details of how to influence
-# the contents of the Makefile that is written.
 
-my $libs = `yaz-config --libs` || die "ERROR: Unable to call script: yaz-config";
+## $Id: Makefile.PL,v 1.6 2004/06/07 17:08:00 adam Exp $
+
+my $libs = `yaz-config --libs threads` || die "ERROR: Unable to call script: yaz-config";
+
+# For Windows use
+# 'LIBS' => 'c:\yaz\lib\yaz.lib'
+# 'INC' => 'c:\yaz\include'
 
 WriteMakefile(
     'NAME'	=> 'Net::Z3950::SimpleServer',

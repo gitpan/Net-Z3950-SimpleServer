@@ -1,5 +1,8 @@
 /*
- * Copyright (c) 2000, Index Data.
+ * $Id: SimpleServer.xs,v 1.33 2004/06/07 17:00:55 adam Exp $ 
+ * ----------------------------------------------------------------------
+ * 
+ * Copyright (c) 2000-2004, Index Data.
  *
  * Permission to use, copy, modify, distribute, and sell this software and
  * its documentation, in whole or in part, for any purpose, is hereby granted,
@@ -24,56 +27,19 @@
  * OF THIS SOFTWARE.
  */
 
-/*$Log: SimpleServer.xs,v $
-/*Revision 1.18  2003/01/03 09:05:41  sondberg
-/*Applied Dave's GRS-1 patch - actually this was already done in revision 1.17.
-/*
-/*Revision 1.16  2002/11/26 17:09:18  mike
-/*basic support for idPass authentication
-/*
-/*Revision 1.15  2002/09/16 13:55:53  sondberg
-/*Added support for authentication into SimpleServer.
-/*
-/*Revision 1.14  2002/03/05 00:34:13  mike
-/*Support for implementation_id (commented out until it's
-/*in mainstream Yaz)
-/*
-/*Revision 1.13  2002/02/28 11:21:57  mike
-/*Add RPN structure to search-handler argument hash.
-/*
-/*Revision 1.12  2001/08/30 14:02:10  sondberg
-/*Small changes.
-/*
-/*Revision 1.11  2001/08/30 13:15:11  sondberg
-/*Corrected a memory leak, one more to go.
-/*
-/*Revision 1.10  2001/08/29 11:48:36  sondberg
-/*Added routines
-/*
-/*	Net::Z3950::SimpleServer::ScanSuccess
-/*	Net::Z3950::SimpleServer::ScanPartial
-/*
-/*and a bit of documentation.
-/*
-/*Revision 1.9  2001/08/24 14:00:20  sondberg
-/*Added support for scan.
-/*
-/*Revision 1.8  2001/05/21 11:07:02  sondberg
-/*Extended maximum numbers of GRS-1 elements. Should be done dynamically.
-/*
-/*Revision 1.7  2001/03/13 14:17:15  sondberg
-/*Added support for GRS-1.
-/**/
-
-
 #include "EXTERN.h"
 #include "perl.h"
+#include "proto.h"
+#include "embed.h"
 #include "XSUB.h"
 #include <yaz/backend.h>
 #include <yaz/log.h>
 #include <yaz/wrbuf.h>
 #include <stdio.h>
+#ifdef WIN32
+#else
 #include <unistd.h>
+#endif
 #include <stdlib.h>
 #include <ctype.h>
 #define GRS_MAX_FIELDS 500 
@@ -83,6 +49,8 @@
 #ifndef sv_undef		/* To fix the problem with Perl 5.6.0 */
 #define sv_undef PL_sv_undef
 #endif
+
+NMEM_MUTEX simpleserver_mutex;
 
 typedef struct {
 	SV *handle;
@@ -96,7 +64,11 @@ typedef struct {
 	SV *esrequest_ref;
 	SV *delete_ref;
 	SV *scan_ref;
+	NMEM nmem;
+	int stop_flag;  /* is used to stop server prematurely .. */
 } Zfront_handle;
+
+#define ENABLE_STOP_SERVER 0
 
 SV *init_ref = NULL;
 SV *close_ref = NULL;
@@ -107,9 +79,94 @@ SV *present_ref = NULL;
 SV *esrequest_ref = NULL;
 SV *delete_ref = NULL;
 SV *scan_ref = NULL;
+PerlInterpreter *root_perl_context;
 int MAX_OID = 15;
 
 #define GRS_BUF_SIZE 512
+
+CV * simpleserver_sv2cv(SV *handler) {
+    STRLEN len;
+    char *buf;
+   
+    if (SvPOK(handler)) {
+	CV *ret;
+	buf = SvPV( handler, len);
+	if ( !( ret = perl_get_cv(buf, FALSE ) ) ) {
+	    fprintf( stderr, "simpleserver_sv2cv: No such handler '%s'\n\n", buf );
+	    exit(1);
+	}
+	
+	return ret;
+    } else {
+	return (CV *) handler;
+    }
+}
+
+/* debugging routine to check for destruction of Perl interpreters */
+#ifdef USE_ITHREADS
+void tst_clones(void)
+{
+    int i; 
+    PerlInterpreter *parent = PERL_GET_CONTEXT;
+    for (i = 0; i<5000; i++)
+    {
+        PerlInterpreter *perl_interp;
+
+	PERL_SET_CONTEXT(parent);
+	PL_perl_destruct_level = 2;
+        perl_interp = perl_clone(parent, CLONEf_CLONE_HOST);
+	PL_perl_destruct_level = 2;
+	PERL_SET_CONTEXT(perl_interp);
+        perl_destruct(perl_interp);
+        perl_free(perl_interp);
+    }
+    exit (0);
+}
+#endif
+
+int simpleserver_clone(void) {
+#ifdef USE_ITHREADS
+     nmem_mutex_enter(simpleserver_mutex);
+     if (1)
+     {
+         PerlInterpreter *current = PERL_GET_CONTEXT;
+
+	 /* if current is unset, then we're in a new thread with
+	  * no Perl interpreter for it. So we must create one .
+	  * This will only happen when threaded is used..
+	  */
+         if (!current) {
+             PerlInterpreter *perl_interp;
+             PERL_SET_CONTEXT( root_perl_context );
+             perl_interp = perl_clone(root_perl_context, CLONEf_CLONE_HOST);
+             PERL_SET_CONTEXT( perl_interp );
+         }
+     }
+     nmem_mutex_leave(simpleserver_mutex);
+#endif
+     return 0;
+}
+
+
+void simpleserver_free(void) {
+    nmem_mutex_enter(simpleserver_mutex);
+    if (1)
+    {
+        PerlInterpreter *current_interp = PERL_GET_CONTEXT;
+
+	/* If current Perl Interp is different from root interp, then
+	 * we're in threaded mode and we must destroy.. 
+	 */
+	if (current_interp != root_perl_context) {
+       	    PL_perl_destruct_level = 2;
+            PERL_SET_CONTEXT(current_interp);
+            perl_destruct(current_interp);
+            perl_free(current_interp);
+	}
+    }
+    nmem_mutex_leave(simpleserver_mutex);
+}
+
 
 Z_GenericRecord *read_grs1(char *str, ODR o)
 {
@@ -509,9 +566,6 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 	temp = hv_fetch(href, "STATUS", 6, 1);
 	status = newSVsv(*temp);
 
-
-	
-
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
@@ -538,19 +592,15 @@ int bend_search(void *handle, bend_search_rr *rr)
 	HV *href;
 	AV *aref;
 	SV **temp;
-	SV *hits;
-	SV *err_code;
-	SV *err_str;
 	char *ODR_errstr;
 	STRLEN len;
 	int i;
 	char **basenames;
-	int n;
 	WRBUF query;
 	char *ptr;
 	SV *point;
-	SV *ODR_point;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
+	CV* handler_cv = 0;
 
 	dSP;
 	ENTER;
@@ -562,6 +612,12 @@ int bend_search(void *handle, bend_search_rr *rr)
 	{
 		av_push(aref, newSVpv(*basenames++, 0));
 	}
+#if ENABLE_STOP_SERVER
+	if (rr->num_bases == 1 && !strcmp(rr->basenames[0], "XXstop"))
+	{
+		zhandle->stop_flag = 1;
+	}
+#endif
 	href = newHV();		
 	hv_store(href, "SETNAME", 7, newSVpv(rr->setname, 0), 0);
 	hv_store(href, "REPL_SET", 8, newSViv(rr->replace_set), 0);
@@ -587,46 +643,36 @@ int bend_search(void *handle, bend_search_rr *rr)
 	
 	PUTBACK;
 
-	n = perl_call_sv(search_ref, G_SCALAR | G_DISCARD);
+	handler_cv = simpleserver_sv2cv( search_ref );
+	perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
 
 	SPAGAIN;
 
 	temp = hv_fetch(href, "HITS", 4, 1);
-	hits = newSVsv(*temp);
+	rr->hits = SvIV(*temp);
 
 	temp = hv_fetch(href, "ERR_CODE", 8, 1);
-	err_code = newSVsv(*temp);
+	rr->errcode = SvIV(*temp);
 
 	temp = hv_fetch(href, "ERR_STR", 7, 1);
-	err_str = newSVsv(*temp);
+	ptr = SvPV(*temp, len);
+	ODR_errstr = (char *)odr_malloc(rr->stream, len + 1);
+	strcpy(ODR_errstr, ptr);
+	rr->errstring = ODR_errstr;
 
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
 
+	hv_undef(href);
+	av_undef(aref);
+
+	zhandle->handle = point;
+	sv_free( (SV*) aref);
+	sv_free( (SV*) href);
+	wrbuf_free(query, 1);
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
-	
-	hv_undef(href);
-	av_undef(aref);
-	rr->hits = SvIV(hits);
-	rr->errcode = SvIV(err_code);
-	ptr = SvPV(err_str, len);
-	ODR_errstr = (char *)odr_malloc(rr->stream, len + 1);
-	strcpy(ODR_errstr, ptr);
-	rr->errstring = ODR_errstr;
-/*	ODR_point = (SV *)odr_malloc(rr->stream, sizeof(*point));
-	memcpy(ODR_point, point, sizeof(*point));
-	zhandle->handle = ODR_point;*/
-	zhandle->handle = point;
-	handle = zhandle;
-	sv_free(hits);
-	sv_free(err_code);
-	sv_free(err_str);
-	sv_free( (SV*) aref);
-	sv_free( (SV*) href);
-	/*sv_free(point);*/
-	wrbuf_free(query, 1);
 	return 0;
 }
 
@@ -716,6 +762,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	oident *oid;
 	WRBUF oid_dotted;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
+	CV* handler_cv = 0;
 
 	Z_RecordComposition *composition;
 	Z_ElementSetNames *simple;
@@ -767,7 +814,8 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 
 	PUTBACK;
 	
-	perl_call_sv(fetch_ref, G_SCALAR | G_DISCARD);
+	handler_cv = simpleserver_sv2cv( fetch_ref );
+	perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
 
 	SPAGAIN;
 
@@ -795,9 +843,6 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
 
-	PUTBACK;
-	FREETMPS;
-	LEAVE;
 
 	hv_undef(href);
 	
@@ -851,6 +896,10 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	sv_free(err_code),
 	sv_free(sur_flag);
 	sv_free(rep_form);
+
+	PUTBACK;
+	FREETMPS;
+	LEAVE;
 	
 	return 0;
 }
@@ -858,7 +907,6 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 
 int bend_present(void *handle, bend_present_rr *rr)
 {
-
 	HV *href;
 	SV **temp;
 	SV *err_code;
@@ -871,6 +919,7 @@ int bend_present(void *handle, bend_present_rr *rr)
 	char *ODR_errstr;
 	char *ptr;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
+	CV* handler_cv = 0;
 
 /*	WRBUF oid_dotted; */
 
@@ -918,7 +967,8 @@ int bend_present(void *handle, bend_present_rr *rr)
 	
 	PUTBACK;
 	
-	perl_call_sv(present_ref, G_SCALAR | G_DISCARD);
+	handler_cv = simpleserver_sv2cv( present_ref );
+	perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
 	
 	SPAGAIN;
 
@@ -994,10 +1044,9 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 	char *ODR_errstr;
 	STRLEN len;
 	int term_len;
-	SV *term_tmp;
 	SV *entries_ref;
-	
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
+	CV* handler_cv = 0;
 
 	dSP;
 	ENTER;
@@ -1034,7 +1083,8 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 
 	PUTBACK;
 
-	perl_call_sv(scan_ref, G_SCALAR | G_DISCARD);
+	handler_cv = simpleserver_sv2cv( scan_ref );
+	perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
 
 	SPAGAIN;
 
@@ -1102,31 +1152,29 @@ int bend_scan(void *handle, bend_scan_rr *rr)
         return 0;
 }
 
-
 bend_initresult *bend_init(bend_initrequest *q)
 {
-	bend_initresult *r = (bend_initresult *) odr_malloc (q->stream, sizeof(*r));
-	HV *href;
-	SV **temp;
-	SV *id;
-	SV *name;
-	SV *ver;
-	SV *err_str;
-	SV *status;
-	Zfront_handle *zhandle =  (Zfront_handle *) xmalloc (sizeof(*zhandle));
-	STRLEN len;
-	int n;
-	SV *handle;
-	/*char *name_ptr;
-	char *ver_ptr;*/
+	int dummy = simpleserver_clone();
+	bend_initresult *r = (bend_initresult *)
+		odr_malloc (q->stream, sizeof(*r));
 	char *ptr;
 	char *user = NULL;
 	char *passwd = NULL;
-
+	CV* handler_cv = 0;
 	dSP;
+	STRLEN len;
+	NMEM nmem = nmem_create();
+	Zfront_handle *zhandle =  (Zfront_handle *) nmem_malloc (nmem,
+			sizeof(*zhandle));
+	SV *handle;
+	HV *href;
+	SV **temp;
+
 	ENTER;
 	SAVETMPS;
 
+	zhandle->nmem = nmem;
+	zhandle->stop_flag = 0;
 	/*q->bend_sort = bend_sort;*/
 	if (search_ref)
 	{
@@ -1146,11 +1194,13 @@ bend_initresult *bend_init(bend_initrequest *q)
 	{
 		q->bend_scan = bend_scan;
 	}
+
        	href = newHV();	
 	hv_store(href, "IMP_ID", 6, newSVpv("", 0), 0);
 	hv_store(href, "IMP_NAME", 8, newSVpv("", 0), 0);
 	hv_store(href, "IMP_VER", 7, newSVpv("", 0), 0);
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
+	hv_store(href, "ERR_STR", 7, newSViv(0), 0);
 	hv_store(href, "PEER_NAME", 9, newSVpv(q->peer_name, 0), 0);
 	hv_store(href, "HANDLE", 6, newSVsv(&sv_undef), 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
@@ -1175,90 +1225,93 @@ bend_initresult *bend_init(bend_initrequest *q)
 
 	PUSHMARK(sp);	
 
-	XPUSHs(sv_2mortal(newRV( (SV*) href)));
+	XPUSHs(sv_2mortal(newRV((SV*) href)));
 
 	PUTBACK;
 
 	if (init_ref != NULL)
 	{
-		perl_call_sv(init_ref, G_SCALAR | G_DISCARD);
+	     handler_cv = simpleserver_sv2cv( init_ref );
+	     perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
 	}
 
 	SPAGAIN;
 
 	temp = hv_fetch(href, "IMP_ID", 6, 1);
-	id = newSVsv(*temp);
+	ptr = SvPV(*temp, len);
+	q->implementation_id = nmem_strdup(nmem, ptr);
 
 	temp = hv_fetch(href, "IMP_NAME", 8, 1);
-	name = newSVsv(*temp);
+	ptr = SvPV(*temp, len);
+	q->implementation_name = nmem_strdup(nmem, ptr);
 
 	temp = hv_fetch(href, "IMP_VER", 7, 1);
-	ver = newSVsv(*temp);
+	ptr = SvPV(*temp, len);
+	q->implementation_version = nmem_strdup(nmem, ptr);
 
 	temp = hv_fetch(href, "ERR_CODE", 8, 1);
-	status = newSVsv(*temp);
+	r->errcode = SvIV(*temp);
+
+	temp = hv_fetch(href, "ERR_STR", 7, 1);
+	ptr = SvPV(*temp, len);
+	r->errstring = (char *)odr_malloc(q->stream, len + 1);
+	strcpy(r->errstring, ptr);
 
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	handle= newSVsv(*temp);
+	zhandle->handle = handle;
+
+	r->handle = zhandle;
 
 	hv_undef(href);
+	sv_free((SV*) href);
+
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
-	zhandle->handle = handle;
-	r->errcode = SvIV(status);
-	r->handle = zhandle;
-#if 0 /* implementation_id support is not yet in mainstream Yaz */
-	ptr = SvPV(id, len);
-	q->implementation_id = (char *)xmalloc(len + 1);
-	strcpy(q->implementation_id, ptr);
-#endif
-	ptr = SvPV(name, len);
-	q->implementation_name = (char *)xmalloc(len + 1);
-	strcpy(q->implementation_name, ptr);
-/*	q->implementation_name = SvPV(name, len);*/
-	ptr = SvPV(ver, len);
-	q->implementation_version = (char *)xmalloc(len + 1);
-	strcpy(q->implementation_version, ptr);
 	
-	return r;
+	return r;	
 }
-
 
 void bend_close(void *handle)
 {
 	HV *href;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
-	SV **temp;
-
+	CV* handler_cv = 0;
+	int stop_flag = 0;
 	dSP;
 	ENTER;
 	SAVETMPS;
 
-	if (close_ref == NULL)
+	if (close_ref)
 	{
-		return;
+		href = newHV();
+		hv_store(href, "HANDLE", 6, zhandle->handle, 0);
+
+		PUSHMARK(sp);
+
+		XPUSHs(sv_2mortal(newRV((SV *)href)));
+
+		PUTBACK;
+	
+		handler_cv = simpleserver_sv2cv( close_ref );
+		perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
+	
+		SPAGAIN;
+
+		sv_free((SV*) href);
 	}
-
-	href = newHV();
-	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
-
-	PUSHMARK(sp);
-
-	XPUSHs(sv_2mortal(newRV((SV *)href)));
-
-	PUTBACK;
-	
-	perl_call_sv(close_ref, G_SCALAR | G_DISCARD);
-	
-	SPAGAIN;
-
+	else
+		sv_free(zhandle->handle);
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
+	stop_flag = zhandle->stop_flag;
+	nmem_destroy(zhandle->nmem);
+	simpleserver_free();
 
-	xfree(handle);
-	
+	if (stop_flag)
+		exit(0);
 	return;
 }
 
@@ -1345,6 +1398,12 @@ start_server(...)
 			strcpy(*argv_buf++, ptr); 
 		}
 		*argv_buf = NULL;
+		root_perl_context = PERL_GET_CONTEXT;
+		nmem_mutex_create(&simpleserver_mutex);
+#if 0
+		/* only for debugging perl_clone .. */
+		tst_clones();
+#endif
 		
 		RETVAL = statserv_main(items, argv, bend_init, bend_close);
 	OUTPUT:

@@ -1,5 +1,5 @@
 ##
-##  Copyright (c) 2000, Index Data.
+##  Copyright (c) 2000-2004, Index Data.
 ##
 ##  Permission to use, copy, modify, distribute, and sell this software and
 ##  its documentation, in whole or in part, for any purpose, is hereby granted,
@@ -25,47 +25,7 @@
 ##
 ##
 
-## $Log: SimpleServer.pm,v $
-## Revision 1.16  2003/01/03 09:01:51  sondberg
-## Version 0.07.
-##
-## Revision 1.15  2002/09/16 14:00:16  sondberg
-## Updated Changes and added a few lines of documentation.
-##
-## Revision 1.14  2002/03/06 11:30:02  mike
-## Add RPN structure documentation to SimpleServer.pm's POD.
-## Add README to MANIFEST.
-##
-## Revision 1.13  2002/03/06 11:02:04  mike
-## Added simple README file, derived from POD comments in SimpleServer.pm
-## Fixed my (Mike Taylor's) email address
-##
-## Revision 1.12  2002/03/05 20:52:22  sondberg
-## Version 0.05 so that we can release the thing at CPAN.
-##
-## Revision 1.11  2002/03/05 20:49:56  sondberg
-## Added a couple of lines of documentation.
-##
-## Revision 1.10  2002/02/28 11:21:57  mike
-## Add RPN structure to search-handler argument hash.
-##
-## Revision 1.9  2001/08/29 11:48:36  sondberg
-## Added routines
-##
-## 	Net::Z3950::SimpleServer::ScanSuccess
-## 	Net::Z3950::SimpleServer::ScanPartial
-##
-## and a bit of documentation.
-##
-## Revision 1.8  2001/08/29 10:29:51  sondberg
-## Added some documentation of scan.
-##
-## Revision 1.7  2001/08/24 14:00:20  sondberg
-## Added support for scan.
-##
-## Revision 1.6  2001/03/13 14:17:15  sondberg
-## Added support for GRS-1.
-##
+## $Id: SimpleServer.pm,v 1.21 2004/06/04 09:57:00 sondberg Exp $
 
 package Net::Z3950::SimpleServer;
 
@@ -78,13 +38,8 @@ require DynaLoader;
 require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
-# Items to export into callers namespace by default. Note: do not export
-# names by default without a very good reason. Use EXPORT_OK instead.
-# Do not simply export all your public functions/methods/constants.
-@EXPORT = qw(
-	
-);
-$VERSION = '0.07';
+@EXPORT = qw( );
+$VERSION = '0.08';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -240,12 +195,12 @@ After the launching of the server, all control is given away from
 the Perl script to the server. The server calls the registered
 subroutines to field incoming requests from Z39.50 clients.
 
-A reference to an anonymous hash is passed to each handle. Some of
+A reference to an anonymous hash is passed to each handler. Some of
 the entries of these hashes are to be considered input and others
 output parameters.
 
-The Perl programmer specifies the event handles for the server by
-means of the the SimpleServer object constructor
+The Perl programmer specifies the event handlers for the server by
+means of the SimpleServer object constructor
 
   my $z = new Net::Z3950::SimpleServer(
 			INIT	=>	\&my_init_handler,
@@ -255,7 +210,22 @@ means of the the SimpleServer object constructor
 			SCAN	=>	\&my_scan_handler,
 			FETCH	=>	\&my_fetch_handler);
 
-After the custom event handles are declared, the server is launched
+If you want your SimpleServer to start a thread (threaded mode) to
+handle each incoming Z39.50 request instead of forking a process
+(forking mode), you need to register the handlers by symbol rather
+than by code reference. Thus, in threaded mode, you will need to
+register your handlers this way:
+
+  my $z = new Net::Z3950::SimpleServer(
+  			INIT	=>	"my_package::my_init_handler",
+			CLOSE	=>	"my_package::my_close_handler",
+			....
+			....          );
+
+where my_package is the Perl package in which your handler is
+located.
+
+After the custom event handlers are declared, the server is launched
 by means of the method
 
   $z->launch_server("MyServer.pl", @ARGV);
@@ -264,6 +234,9 @@ Notice, the first argument should be the name of your server
 script (for logging purposes), while the rest of the arguments
 are documented in the YAZ toolkit manual: The section on
 application invocation: <http://www.indexdata.dk/yaz/yaz-7.php>
+
+In particular, you need to use the -T switch to start your SimpleServer
+in threaded mode.
 
 =head2 Init handler
 
@@ -279,9 +252,11 @@ The argument hash passed to the init handler has the form
   $args = {
 				    ## Response parameters:
 
+	     IMP_ID    =>  "",      ## Z39.50 Implementation ID
 	     IMP_NAME  =>  "",      ## Z39.50 Implementation name
 	     IMP_VER   =>  "",      ## Z39.50 Implementation version
 	     ERR_CODE  =>  0,       ## Error code, cnf. Z39.50 manual
+	     ERR_STR   =>  "",      ## Error string (additional info.)
 	     USER      =>  "xxx"    ## If Z39.50 authentication is used,
 	     			    ## this member contains user name
 	     PASS      =>  "yyy"    ## Under same conditions, this member
@@ -298,13 +273,14 @@ result sets or a handle to a back-end search engine of some sort),
 it is always best to store them in a private session structure -
 rather than leaving them in global variables in your script.
 
-The Implementation name and version are only really used by Z39.50
+The Implementation ID, name and version are only really used by Z39.50
 client developers to see what kind of server they're dealing with.
 Filling these in is optional.
 
 The ERR_CODE should be left at 0 (the default value) if you wish to
 accept the connection. Any other value is interpreted as a failure
-and the client will be shown the door.
+and the client will be shown the door, with the code and the
+associated additional information, ERR_STR returned.
 
 =head2 Search handler
 
