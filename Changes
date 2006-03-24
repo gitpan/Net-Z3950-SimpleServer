@@ -1,4 +1,23 @@
+$Id: Changes,v 1.20 2006/03/24 01:20:44 mike Exp $
+
 Revision history for Perl extension Net::Z3950::SimpleServer
+
+1.00  Fri Mar 24 01:20:24 GMT 2006
+	- Support for SRU and SRW.  Mostly this is provided by the YAZ
+	  GFS, but changes are needed to allow for the case where
+	  there is no RPN query (due to absent on invalid <cql2rpn>
+	  element in GFS configuration) so that CQL is passed through
+	  natively; and also to fake up an {REQ_FORM} and {REP_FORM}
+	  parameters set to the "text/xml" OID when this information
+	  is not specified by the GFS.
+	  (The jump in version number is due to the SRU/W support.)
+	- Include "logging-server.pl" in the distribution: the
+	  simplest possible SimpleServer application, which merely
+	  logs the client-request data structures.
+	- Makefile.PL is more helpful if yaz-config isn't found.
+	- Explicitly disable prototypes in SimpleServer.xs: makes no
+	  difference but suppresses an error message for a cleaner
+	  build.
 
 0.08  Mon Jun 14 14:51:01 2004
 	- SimpleServer is now perl 5.8 thread proof 

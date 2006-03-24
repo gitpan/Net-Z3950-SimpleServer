@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.33 2004/06/07 17:00:55 adam Exp $ 
+ * $Id: SimpleServer.xs,v 1.37 2006/03/09 17:13:43 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -358,7 +358,7 @@ void fatal(char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "FATAL (yazwrap): ");
+    fprintf(stderr, "FATAL (SimpleServer): ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -441,8 +441,22 @@ static SV *rpn2perl(Z_RPNStructure *s)
     case Z_RPNStructure_simple: {
 	Z_Operand *o = s->u.simple;
 	Z_AttributesPlusTerm *at;
+	if (o->which == Z_Operand_resultSetId) {
+	    SV *sv2;
+	    /* This code causes a SIGBUS on my machine, and I have no
+	       idea why.  It seems as clear as day to me */
+	    char *rsid = (char*) o->u.resultSetId;
+	    printf("Encoding resultSetId '%s'\n", rsid);
+	    sv = newObject("Net::Z3950::RPN::RSID", (SV*) (hv = newHV()));
+	    printf("Made sv=0x%lx, hv=0x%lx\n",
+		   (unsigned long) sv ,(unsigned long) hv);
+	    sv2 = newSVpv(rsid, strlen(rsid));
+	    setMember(hv, "id", sv2);
+	    printf("Set hv{id} to 0x%lx\n", (unsigned long) sv2);
+	    return sv;
+	}
 	if (o->which != Z_Operand_APT)
-	    fatal("can't handle RPN simples other than APT");
+	    fatal("can't handle RPN simples other than APT and RSID");
 	at = o->u.attributesPlusTerm;
 	if (at->term->which != Z_Term_general)
 	    fatal("can't handle RPN terms other than general");
@@ -601,6 +615,7 @@ int bend_search(void *handle, bend_search_rr *rr)
 	SV *point;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
 	CV* handler_cv = 0;
+	SV *rpnSV;
 
 	dSP;
 	ENTER;
@@ -627,15 +642,23 @@ int bend_search(void *handle, bend_search_rr *rr)
 	hv_store(href, "DATABASES", 9, newRV( (SV*) aref), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
-	hv_store(href, "RPN", 3, zquery2perl(rr->query), 0);
+	if ((rpnSV = zquery2perl(rr->query)) != 0) {
+	    hv_store(href, "RPN", 3, rpnSV, 0);
+	}
 	query = zquery2pquery(rr->query);
 	if (query)
 	{
 		hv_store(href, "QUERY", 5, newSVpv((char *)query->buf, query->pos), 0);
 	}
+	else if (rr->query->which == Z_Query_type_104 &&
+		 rr->query->u.type_104->which == Z_External_CQL) {
+	    hv_store(href, "CQL", 3,
+		     newSVpv(rr->query->u.type_104->u.cql, 0), 0);
+	}
 	else
 	{	
 		rr->errcode = 108;
+		return 0;
 	}
 	PUSHMARK(sp);
 	
@@ -669,7 +692,8 @@ int bend_search(void *handle, bend_search_rr *rr)
 	zhandle->handle = point;
 	sv_free( (SV*) aref);
 	sv_free( (SV*) href);
-	wrbuf_free(query, 1);
+	if (query)
+	    wrbuf_free(query, 1);
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
@@ -776,7 +800,13 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	href = newHV();
 	hv_store(href, "SETNAME", 7, newSVpv(rr->setname, 0), 0);
 	temp = hv_store(href, "OFFSET", 6, newSViv(rr->number), 0);
-	oid_dotted = oid2dotted(rr->request_format_raw);
+	if (rr->request_format_raw != 0) {
+	    oid_dotted = oid2dotted(rr->request_format_raw);
+	} else {
+	    /* Probably an SRU request: assume XML is required */
+	    oid_dotted = wrbuf_alloc();
+	    wrbuf_puts(oid_dotted, "1.2.840.10003.5.109.10");
+	}
 	hv_store(href, "REQ_FORM", 8, newSVpv((char *)oid_dotted->buf, oid_dotted->pos), 0);
 	hv_store(href, "REP_FORM", 8, newSVpv((char *)oid_dotted->buf, oid_dotted->pos), 0);
 	hv_store(href, "BASENAME", 8, newSVpv("", 0), 0);
@@ -804,7 +834,11 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 		}
 		else
 		{
-			rr->errcode = 26;
+			/* This is where we end up in the case of
+			 * SRU.  Since record composition ("element
+			 * sets") are meaningless in SRU anyway, we
+			 * just skip this.
+			 */
 		}
 	}
 
@@ -1318,6 +1352,9 @@ void bend_close(void *handle)
 
 MODULE = Net::Z3950::SimpleServer	PACKAGE = Net::Z3950::SimpleServer
 
+PROTOTYPES: DISABLE
+
+
 void
 set_init_handler(arg)
 		SV *arg
@@ -1425,3 +1462,11 @@ ScanPartial()
 		RETVAL
 
  
+void
+yazlog(arg)
+		SV *arg
+	CODE:
+    		STRLEN len;
+		char *ptr;
+		ptr = SvPV(arg, len);
+		yaz_log(YLOG_LOG, "%.*s", len, ptr);
