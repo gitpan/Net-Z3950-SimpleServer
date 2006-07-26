@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.37 2006/03/09 17:13:43 mike Exp $ 
+ * $Id: SimpleServer.xs,v 1.53 2006/07/26 11:09:14 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -64,6 +64,7 @@ typedef struct {
 	SV *esrequest_ref;
 	SV *delete_ref;
 	SV *scan_ref;
+	SV *explain_ref;
 	NMEM nmem;
 	int stop_flag;  /* is used to stop server prematurely .. */
 } Zfront_handle;
@@ -79,6 +80,7 @@ SV *present_ref = NULL;
 SV *esrequest_ref = NULL;
 SV *delete_ref = NULL;
 SV *scan_ref = NULL;
+SV *explain_ref = NULL;
 PerlInterpreter *root_perl_context;
 int MAX_OID = 15;
 
@@ -272,83 +274,14 @@ static void oid2str(Odr_oid *o, WRBUF buf)
 }
 
 
-static int rpn2pquery(Z_RPNStructure *s, WRBUF buf)
-{
-    switch (s->which) {
-	case Z_RPNStructure_simple: {
-	    Z_Operand *o = s->u.simple;
-
-	    switch (o->which) {
-		case Z_Operand_APT: {
-		    Z_AttributesPlusTerm *at = o->u.attributesPlusTerm;
-
-		    if (at->attributes) {
-			int i;
-			char ibuf[16];
-
-			for (i = 0; i < at->attributes->num_attributes; i++) {
-			    wrbuf_puts(buf, "@attr ");
-			    if (at->attributes->attributes[i]->attributeSet) {
-				oid2str(at->attributes->attributes[i]->attributeSet, buf);
-				wrbuf_putc(buf, ' ');
-			    }
-			    sprintf(ibuf, "%d=", *at->attributes->attributes[i]->attributeType);
-			    assert(at->attributes->attributes[i]->which == Z_AttributeValue_numeric);
-			    wrbuf_puts(buf, ibuf);
-			    sprintf(ibuf, "%d ", *at->attributes->attributes[i]->value.numeric);
-			    wrbuf_puts(buf, ibuf);
-			}
-		    }
-		    switch (at->term->which) {
-			case Z_Term_general: {
-			    wrbuf_putc(buf, '"');
-			    wrbuf_write(buf, (char*) at->term->u.general->buf, at->term->u.general->len);
-			    wrbuf_puts(buf, "\" ");
-			    break;
-			}
-			default: abort();
-		    }
-		    break;
-		}
-		default: abort();
-	    }
-	    break;
-	}
-	case Z_RPNStructure_complex: {
-	    Z_Complex *c = s->u.complex;
-
-	    switch (c->roperator->which) {
-		case Z_Operator_and: wrbuf_puts(buf, "@and "); break;
-		case Z_Operator_or: wrbuf_puts(buf, "@or "); break;
-		case Z_Operator_and_not: wrbuf_puts(buf, "@not "); break;
-		case Z_Operator_prox: abort();
-		default: abort();
-	    }
-	    if (!rpn2pquery(c->s1, buf))
-		return 0;
-	    if (!rpn2pquery(c->s2, buf))
-		return 0;
-	    break;
-	}
-	default: abort();
-    }
-    return 1;
-}
-
-
 WRBUF zquery2pquery(Z_Query *q)
 {
     WRBUF buf = wrbuf_alloc();
 
     if (q->which != Z_Query_type_1 && q->which != Z_Query_type_101) 
 	return 0;
-    if (q->u.type_1->attributeSetId) {
-	/* Output attribute set ID */
-	wrbuf_puts(buf, "@attrset ");
-	oid2str(q->u.type_1->attributeSetId, buf);
-	wrbuf_putc(buf, ' ');
-    }
-    return rpn2pquery(q->u.type_1->RPNStructure, buf) ? buf : 0;
+    yaz_rpnquery_to_wrbuf(buf, q->u.type_1);
+    return buf;
 }
 
 
@@ -514,6 +447,103 @@ static SV *rpn2perl(Z_RPNStructure *s)
 }
 
 
+/* Decode the Z_SortAttributes struct and store the whole thing into the
+ * hash by reference
+ */
+int simpleserver_ExpandSortAttributes (HV *sort_spec, Z_SortAttributes *sattr)
+{
+    WRBUF attrset_wr = wrbuf_alloc();
+    AV *list = newAV();
+    Z_AttributeList *attr_list = sattr->list;
+    int i;
+
+    oid2str(sattr->id, attrset_wr);
+    hv_store(sort_spec, "ATTRSET", 7,
+             newSVpv(attrset_wr->buf, attrset_wr->pos), 0);
+    wrbuf_free(attrset_wr, 1);
+
+    hv_store(sort_spec, "SORT_ATTR", 9, newRV( sv_2mortal( (SV*) list ) ), 0);
+
+    for (i = 0; i < attr_list->num_attributes; i++) 
+    {
+        Z_AttributeElement *attr = *attr_list->attributes++; 
+        HV *attr_spec = newHV();
+                
+        av_push(list, newRV( sv_2mortal( (SV*) attr_spec ) ));
+        hv_store(attr_spec, "ATTR_TYPE", 9, newSViv(*attr->attributeType), 0);
+
+        if (attr->which == Z_AttributeValue_numeric)
+        {
+            hv_store(attr_spec, "ATTR_VALUE", 10,
+                     newSViv(*attr->value.numeric), 0);
+        } else {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+/* Decode the Z_SortKeySpec struct and store the whole thing in a perl hash */
+int simpleserver_SortKeySpecToHash (HV *sort_spec, Z_SortKeySpec *spec)
+{
+    Z_SortElement *element = spec->sortElement;
+
+    hv_store(sort_spec, "RELATION", 8, newSViv(*spec->sortRelation), 0);
+    hv_store(sort_spec, "CASE", 4, newSViv(*spec->caseSensitivity), 0);
+    hv_store(sort_spec, "MISSING", 7, newSViv(spec->which), 0);
+
+    if (element->which == Z_SortElement_generic)
+    {
+        Z_SortKey *key = element->u.generic;
+
+        if (key->which == Z_SortKey_sortField)
+        {
+            hv_store(sort_spec, "SORTFIELD", 9,
+                     newSVpv((char *) key->u.sortField, 0), 0);
+        }
+        else if (key->which == Z_SortKey_elementSpec)
+        {
+            Z_Specification *zspec = key->u.elementSpec;
+            
+            hv_store(sort_spec, "ELEMENTSPEC_TYPE", 16,
+                     newSViv(zspec->which), 0);
+
+            if (zspec->which == Z_Schema_oid)
+            {
+                WRBUF elementSpec = wrbuf_alloc();
+
+                oid2str(zspec->schema.oid, elementSpec);
+                hv_store(sort_spec, "ELEMENTSPEC_VALUE", 17,
+                         newSVpv(elementSpec->buf, elementSpec->pos), 0);
+                wrbuf_free(elementSpec, 1);
+            }
+            else if (zspec->which == Z_Schema_uri)
+            {
+                hv_store(sort_spec, "ELEMENTSPEC_VALUE", 17,
+                         newSVpv((char *) zspec->schema.uri, 0), 0);
+            }
+        }
+        else if (key->which == Z_SortKey_sortAttributes)
+        {
+            return simpleserver_ExpandSortAttributes(sort_spec,
+                                                     key->u.sortAttributes);
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+
 static SV *zquery2perl(Z_Query *q)
 {
     SV *sv;
@@ -534,15 +564,18 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 {
 	HV *href;
 	AV *aref;
+        AV *sort_seq;
 	SV **temp;
 	SV *err_code;
 	SV *err_str;
 	SV *status;
+        SV *point;
 	STRLEN len;
 	char *ptr;
 	char *ODR_err_str;
 	char **input_setnames;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
+        Z_SortKeySpecList *sort_spec = rr->sort_sequence;
 	int i;
 	
 	dSP;
@@ -553,13 +586,32 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 	input_setnames = rr->input_setnames;
 	for (i = 0; i < rr->num_input_setnames; i++)
 	{
-		av_push(aref, newSVpv(*input_setnames++, 0));
+            av_push(aref, newSVpv(*input_setnames++, 0));
 	}
+
+        sort_seq = newAV();
+        for (i = 0; i < sort_spec->num_specs; i++)
+        {
+            Z_SortKeySpec *spec = *sort_spec->specs++;
+            HV *sort_spec = newHV();
+
+            if ( simpleserver_SortKeySpecToHash(sort_spec, spec) )
+                av_push(sort_seq, newRV( sv_2mortal( (SV*) sort_spec ) ));
+            else
+            {
+                rr->errcode = 207;
+                return 0;
+            }
+        }
+        
 	href = newHV();
 	hv_store(href, "INPUT", 5, newRV( (SV*) aref), 0);
 	hv_store(href, "OUTPUT", 6, newSVpv(rr->output_setname, 0), 0);
+        hv_store(href, "SEQUENCE", 8, newRV( (SV*) sort_seq), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "STATUS", 6, newSViv(0), 0);
+        hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
+        hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
 
 	PUSHMARK(sp);
 
@@ -580,23 +632,34 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 	temp = hv_fetch(href, "STATUS", 6, 1);
 	status = newSVsv(*temp);
 
-	PUTBACK;
-	FREETMPS;
-	LEAVE;
+        temp = hv_fetch(href, "HANDLE", 6, 1);
+        point = newSVsv(*temp);
 
-	hv_undef(href),
+	hv_undef(href);
 	av_undef(aref);
+        av_undef(sort_seq);
+       
+	sv_free( (SV*) aref);
+	sv_free( (SV*) href);
+	sv_free( (SV*) sort_seq);
+
 	rr->errcode = SvIV(err_code);
 	rr->sort_status = SvIV(status);
+        
 	ptr = SvPV(err_str, len);
 	ODR_err_str = (char *)odr_malloc(rr->stream, len + 1);
 	strcpy(ODR_err_str, ptr);
 	rr->errstring = ODR_err_str;
+        zhandle->handle = point;
 
 	sv_free(err_code);
 	sv_free(err_str);
 	sv_free(status);
 	
+        PUTBACK;
+	FREETMPS;
+	LEAVE;
+
 	return 0;
 }
 
@@ -635,6 +698,8 @@ int bend_search(void *handle, bend_search_rr *rr)
 #endif
 	href = newHV();		
 	hv_store(href, "SETNAME", 7, newSVpv(rr->setname, 0), 0);
+	if (rr->srw_sortKeys && *rr->srw_sortKeys) 
+	    hv_store(href, "SRW_SORTKEYS", 12, newSVpv(rr->srw_sortKeys, 0), 0);
 	hv_store(href, "REPL_SET", 8, newSViv(rr->replace_set), 0);
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
@@ -778,6 +843,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	SV *sur_flag;
 	SV *point;
 	SV *rep_form;
+	SV *schema;
 	char *ptr;
 	char *ODR_record;
 	char *ODR_basename;
@@ -790,6 +856,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 
 	Z_RecordComposition *composition;
 	Z_ElementSetNames *simple;
+	Z_CompSpec *complex;
 	STRLEN length;
 
 	dSP;
@@ -799,6 +866,8 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	rr->errcode = 0;
 	href = newHV();
 	hv_store(href, "SETNAME", 7, newSVpv(rr->setname, 0), 0);
+	if (rr->schema)
+		hv_store(href, "SCHEMA", 6, newSVpv(rr->schema, 0), 0);
 	temp = hv_store(href, "OFFSET", 6, newSViv(rr->number), 0);
 	if (rr->request_format_raw != 0) {
 	    oid_dotted = oid2dotted(rr->request_format_raw);
@@ -832,13 +901,32 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 				rr->errcode = 26;
 			}
 		}
+		else if (composition->which == Z_RecordComp_complex)
+		{
+		        if (composition->u.complex->generic &&
+
+					composition->u.complex->generic &&
+					composition->u.complex->generic->elementSpec &&
+					composition->u.complex->generic->elementSpec->which ==
+					Z_ElementSpec_elementSetName)
+			{
+				complex = composition->u.complex;
+				hv_store(href, "COMP", 4,
+					newSVpv(complex->generic->elementSpec->u.elementSetName, 0), 0);
+			}
+			else
+			{
+#if 0	/* For now ignore this error, which is ubiquitous in SRU */
+				fprintf(stderr, "complex is weird\n");
+				rr->errcode = 26;
+				return 0;
+#endif /*0*/
+			}
+		}
 		else
 		{
-			/* This is where we end up in the case of
-			 * SRU.  Since record composition ("element
-			 * sets") are meaningless in SRU anyway, we
-			 * just skip this.
-			 */
+			rr->errcode = 26;
+			return;
 		}
 	}
 
@@ -873,6 +961,16 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 
 	temp = hv_fetch(href, "REP_FORM", 8, 1);
 	rep_form = newSVsv(*temp);
+
+	temp = hv_fetch(href, "SCHEMA", 6, 1);
+	if (temp != 0) {
+		schema = newSVsv(*temp);
+		ptr = SvPV(schema, length);
+		if (length > 0) {
+			rr->schema = (char *)odr_malloc(rr->stream, length + 1);
+			strcpy(rr->schema, ptr);
+		}
+	}
 
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
@@ -930,6 +1028,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	sv_free(err_code),
 	sv_free(sur_flag);
 	sv_free(rep_form);
+	sv_free(schema);
 
 	PUTBACK;
 	FREETMPS;
@@ -950,6 +1049,7 @@ int bend_present(void *handle, bend_present_rr *rr)
 	STRLEN len;
 	Z_RecordComposition *composition;
 	Z_ElementSetNames *simple;
+	Z_CompSpec *complex;
 	char *ODR_errstr;
 	char *ptr;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
@@ -988,10 +1088,29 @@ int bend_present(void *handle, bend_present_rr *rr)
 				return 0;
 			}
 		}
+		else if (composition->which == Z_RecordComp_complex)
+		{
+		        if (composition->u.complex->generic &&
+
+					composition->u.complex->generic &&
+					composition->u.complex->generic->elementSpec &&
+					composition->u.complex->generic->elementSpec->which ==
+					Z_ElementSpec_elementSetName)
+			{
+				complex = composition->u.complex;
+				hv_store(href, "COMP", 4,
+					newSVpv(complex->generic->elementSpec->u.elementSetName, 0), 0);
+			}
+			else
+			{
+				rr->errcode = 26;
+				return 0;
+			}
+		}
 		else
 		{
 			rr->errcode = 26;
-			return 0;
+			return;
 		}
 	}
 
@@ -1090,7 +1209,7 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 	if (rr->term->term->which == Z_Term_general)
 	{
 		term_len = rr->term->term->u.general->len;
-		hv_store(href, "TERM", 4, newSVpv(rr->term->term->u.general->buf, term_len), 0);
+		hv_store(href, "TERM", 4, newSVpv((char*) rr->term->term->u.general->buf, term_len), 0);
 	} else {
 		rr->errcode = 229;	/* Unsupported term type */
 		return 0;
@@ -1186,14 +1305,54 @@ int bend_scan(void *handle, bend_scan_rr *rr)
         return 0;
 }
 
+int bend_explain(void *handle, bend_explain_rr *q)
+{
+	HV *href;
+	CV *handler_cv = 0;
+	SV **temp;
+	char *explain;
+	SV *explainsv;
+	STRLEN len;
+	Zfront_handle *zhandle = (Zfront_handle *)handle;
+
+	dSP;
+	ENTER;
+	SAVETMPS;
+
+	href = newHV();
+	hv_store(href, "EXPLAIN", 7, newSVpv("", 0), 0);
+	hv_store(href, "DATABASE", 8, newSVpv(q->database, 0), 0);
+	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
+
+	PUSHMARK(sp);
+	XPUSHs(sv_2mortal(newRV((SV*) href)));
+	PUTBACK;
+
+	handler_cv = simpleserver_sv2cv(explain_ref);
+	perl_call_sv((SV*) handler_cv, G_SCALAR | G_DISCARD);
+
+	SPAGAIN;
+
+	temp = hv_fetch(href, "EXPLAIN", 7, 1);
+	explainsv = newSVsv(*temp);
+
+	PUTBACK;
+	FREETMPS;
+	LEAVE;
+
+	explain = SvPV(explainsv, len);
+	q->explain_buf = (char*) odr_malloc(q->stream, len + 1);
+	strcpy(q->explain_buf, explain);
+
+        return 0;
+}
+
 bend_initresult *bend_init(bend_initrequest *q)
 {
 	int dummy = simpleserver_clone();
 	bend_initresult *r = (bend_initresult *)
 		odr_malloc (q->stream, sizeof(*r));
 	char *ptr;
-	char *user = NULL;
-	char *passwd = NULL;
 	CV* handler_cv = 0;
 	dSP;
 	STRLEN len;
@@ -1209,7 +1368,11 @@ bend_initresult *bend_init(bend_initrequest *q)
 
 	zhandle->nmem = nmem;
 	zhandle->stop_flag = 0;
-	/*q->bend_sort = bend_sort;*/
+
+        if (sort_ref)
+        {
+            q->bend_sort = bend_sort;
+        }
 	if (search_ref)
 	{
 		q->bend_search = bend_search;
@@ -1228,6 +1391,10 @@ bend_initresult *bend_init(bend_initrequest *q)
 	{
 		q->bend_scan = bend_scan;
 	}
+	if (explain_ref)
+	{
+		q->bend_explain = bend_explain;
+	}
 
        	href = newHV();	
 	hv_store(href, "IMP_ID", 6, newSVpv("", 0), 0);
@@ -1239,22 +1406,26 @@ bend_initresult *bend_init(bend_initrequest *q)
 	hv_store(href, "HANDLE", 6, newSVsv(&sv_undef), 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
 	if (q->auth) {
+	    char *user = NULL;
+	    char *passwd = NULL;
 	    if (q->auth->which == Z_IdAuthentication_open) {
-		char *openpass = xstrdup (q->auth->u.open);
-		char *cp = strchr (openpass, '/');
+                char *cp;
+		user = nmem_strdup (odr_getmem (q->stream), q->auth->u.open);
+		cp = strchr (user, '/');
 		if (cp) {
+                    /* password after / given */
 		    *cp = '\0';
-		    user = nmem_strdup (odr_getmem (q->stream), openpass);
-		    passwd = nmem_strdup (odr_getmem (q->stream), cp + 1);
+		    passwd = cp+1;
 		}
-		xfree(openpass);
 	    } else if (q->auth->which == Z_IdAuthentication_idPass) {
 		user = q->auth->u.idPass->userId;
 		passwd = q->auth->u.idPass->password;
 	    }
 	    /* ### some code paths have user/password unassigned here */
-	    hv_store(href, "USER", 4, newSVpv(user, 0), 0);
-	    hv_store(href, "PASS", 4, newSVpv(passwd, 0), 0);
+            if (user)
+	        hv_store(href, "USER", 4, newSVpv(user, 0), 0);
+            if (passwd)
+	        hv_store(href, "PASS", 4, newSVpv(passwd, 0), 0);
 	}
 
 	PUSHMARK(sp);	
@@ -1416,6 +1587,11 @@ set_scan_handler(arg)
 	CODE:
 		scan_ref = newSVsv(arg);
 
+void
+set_explain_handler(arg)
+		SV *arg
+	CODE:
+		explain_ref = newSVsv(arg);
 
 int
 start_server(...)

@@ -25,7 +25,7 @@
 ##
 ##
 
-## $Id: SimpleServer.pm,v 1.24 2006/03/24 11:56:39 mike Exp $
+## $Id: SimpleServer.pm,v 1.28 2006/07/21 22:14:19 mike Exp $
 
 package Net::Z3950::SimpleServer;
 
@@ -39,7 +39,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.01';
+$VERSION = '1.02';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -82,6 +82,12 @@ sub launch_server {
 	}
 	if (defined($self->{SCAN})) {
 		set_scan_handler($self->{SCAN});
+	}
+	if (defined($self->{SORT})) {
+		set_sort_handler($self->{SORT});
+	}
+	if (defined($self->{EXPLAIN})) {
+		set_explain_handler($self->{EXPLAIN});
 	}
 
 	start_server(@args);
@@ -209,7 +215,8 @@ means of the SimpleServer object constructor
 			SEARCH	=>	\&my_search_handler,
 			PRESENT	=>	\&my_present_handler,
 			SCAN	=>	\&my_scan_handler,
-			FETCH	=>	\&my_fetch_handler);
+			FETCH	=>	\&my_fetch_handler,
+  			EXPLAIN =>	\&my_explain_handler);
 
 If you want your SimpleServer to start a thread (threaded mode) to
 handle each incoming Z39.50 request instead of forking a process
@@ -531,6 +538,7 @@ The parameters exchanged between the server and the fetch handler are
 	     OFFSET    =>  nnn      ## Record offset number
 	     REQ_FORM  =>  "n.m.k.l"## Client requested format OID
 	     COMP      =>  "xyz"    ## Formatting instructions
+	     SCHEMA    =>  "abc"    ## Requested schema, if any
 
 				    ## Handler response:
 
@@ -541,6 +549,7 @@ The parameters exchanged between the server and the fetch handler are
 	     ERR_STR   =>  ""       ## Error string
 	     SUR_FLAG  =>  0        ## Surrogate diagnostic flag
 	     REP_FORM  =>  "n.m.k.l"## Provided format OID
+	     SCHEMA    =>  "abc"    ## Provided schema, if any
 	  };
 
 The REP_FORM value has by default the REQ_FORM value but can be set to

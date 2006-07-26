@@ -1,6 +1,14 @@
-$Id: Changes,v 1.22 2006/03/24 12:09:43 mike Exp $
+$Id: Changes,v 1.26 2006/07/26 11:10:05 mike Exp $
 
 Revision history for Perl extension Net::Z3950::SimpleServer
+
+1.02  Wed Jul 26 12:09:50 BST 2006
+	- Better support for Open and User/Password authentication.
+	- SimpleServer.xs's rpn2pquery() is now discarded, and YAZ's
+	  yaz_rpnquery_to_wrbuf() used instead.  This is more robust
+	  in dealing with unusual cases such as string-valued
+	  attributes.
+	- Support for SCHEMA element when fetching records.
 
 1.01  Fri Mar 24 12:09:32 GMT 2006
 	- Documentation of release 1.00's SRU/SRW facilities.
