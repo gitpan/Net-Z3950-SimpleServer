@@ -1,6 +1,19 @@
-$Id: Changes,v 1.30 2006/12/27 12:24:50 sondberg Exp $
+$Id: Changes,v 1.36 2007/08/10 22:29:58 mike Exp $
 
 Revision history for Perl extension Net::Z3950::SimpleServer
+
+1.06  Fri Aug 10 23:30:00 BST 2007
+	- New global-handle element can be specified when creating a
+	  simple-server object and will be passed to all callback
+	  functions.  This allows global state to be eliminated from
+	  SimpleServer applications ... finally!
+	- Search handler now deals correctly with undefined addinfo:
+	  previously a (harmless) error message was emitted.
+	- Add Perl API to yaz_diag_srw_to_bib1(), which SimpleServer
+	  applications will need if they access SRU/SRW back-end
+	  databases and need to report errors.
+	- Add Perl API to yaz_diag_bib1_to_srw(), because it would
+	  seem churlish not to.
 
 1.05  Wed Dec 27 13:19:13 CET 2006
         - Taking new naming convention for YAZ constants into account.

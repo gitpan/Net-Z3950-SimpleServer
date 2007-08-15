@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-##  $Id: ztest.pl,v 1.15 2006/04/19 13:17:52 sondberg Exp $
+##  $Id: ztest.pl,v 1.17 2007/03/08 14:51:32 mike Exp $
 ##  ------------------------------------------------------------------
 ##
 ##  Copyright (c) 2000-2004, Index Data.
@@ -100,8 +100,12 @@ sub my_scan_handler {
 }
 
 
+my $_fail_frequency = 0;
+my $_counter = 0;
+
 sub my_search_handler { 
 	my $args = shift;
+
 	my $data = [{
 			name		=>	"Peter Dornan",
 			title		=>	"Spokesman",
@@ -131,6 +135,10 @@ sub my_search_handler {
 	$args->{HITS} = $hits;
 	$session->{$set_id} = $data;
 	$session->{__HITS} = $hits;
+	if ($_fail_frequency != 0 && ++$_counter % $_fail_frequency == 0) {
+	    print "Exiting to be nasty to client\n";
+	    exit(1);
+	}
 }
 
 
@@ -166,4 +174,9 @@ my $handler = new Net::Z3950::SimpleServer(
                 SORT    =>      "main::my_sort_handler",
 		FETCH	=>	"main::my_fetch_handler" );
 
+if (@ARGV >= 2 && $ARGV[0] eq "-n") {
+    $_fail_frequency = $ARGV[1];
+    shift;
+    shift;
+}
 $handler->launch_server("ztest.pl", @ARGV);

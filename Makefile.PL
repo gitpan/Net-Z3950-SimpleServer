@@ -1,11 +1,11 @@
 use ExtUtils::MakeMaker;
 
-## $Id: Makefile.PL,v 1.12 2006/08/08 16:25:37 mike Exp $
+## $Id: Makefile.PL,v 1.17 2007/05/23 07:56:07 adam Exp $
 
 my $yazconf = "yaz-config";
 my $yazver = `$yazconf --version`;
-my $yazinc = `$yazconf --cflags threads`;
-my $yazlibs = `$yazconf --libs threads`;
+my $yazinc = `$yazconf --cflags servers`;
+my $yazlibs = `$yazconf --libs server`;
 if (!$yazver || (!$yazinc && !$yazlibs)) {
    die qq[
 ERROR: Unable to call script: yaz-config
@@ -18,7 +18,7 @@ SimpleServer module.
 chomp($yazver);
 my ($major, $minor, $trivial) = split(/\./, $yazver);
 # YAZ 2.1.14 is the first to propagate SRW/U addinfo correctly
-my ($needMaj, $needMin, $needTriv) = (2, 1, 24);
+my ($needMaj, $needMin, $needTriv) = (3, 0, 2);
 #print "major=$major, minor=$minor, trivial=$trivial\n";
 die "You have YAZ version $major.$minor.$trivial; " .
     "you need $needMaj.$needMin.$needTriv or better."

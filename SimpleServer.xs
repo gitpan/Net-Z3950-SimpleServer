@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.55 2006/12/22 12:27:19 sondberg Exp $ 
+ * $Id: SimpleServer.xs,v 1.67 2007/08/10 16:44:00 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -37,6 +37,8 @@
 #include <yaz/wrbuf.h>
 #include <yaz/querytowrbuf.h>
 #include <stdio.h>
+#include <yaz/mutex.h>
+#include <yaz/oid_db.h>
 #ifdef WIN32
 #else
 #include <unistd.h>
@@ -51,11 +53,13 @@
 #define sv_undef PL_sv_undef
 #endif
 
-NMEM_MUTEX simpleserver_mutex;
+YAZ_MUTEX simpleserver_mutex;
 
 typedef struct {
-	SV *handle;
-
+	SV *ghandle;	/* Global handle specified at creation */
+	SV *handle;	/* Per-connection handle set at Init */
+#if 0
+/* ### These callback-reference elements are never used! */
 	SV *init_ref;
 	SV *close_ref;
 	SV *sort_ref;
@@ -66,12 +70,14 @@ typedef struct {
 	SV *delete_ref;
 	SV *scan_ref;
 	SV *explain_ref;
+#endif /*0*/
 	NMEM nmem;
 	int stop_flag;  /* is used to stop server prematurely .. */
 } Zfront_handle;
 
 #define ENABLE_STOP_SERVER 0
 
+SV *_global_ghandle = NULL; /* To be copied into zhandle then ignored */
 SV *init_ref = NULL;
 SV *close_ref = NULL;
 SV *sort_ref = NULL;
@@ -83,9 +89,30 @@ SV *delete_ref = NULL;
 SV *scan_ref = NULL;
 SV *explain_ref = NULL;
 PerlInterpreter *root_perl_context;
-int MAX_OID = 15;
 
-#define GRS_BUF_SIZE 512
+#define GRS_BUF_SIZE 8192
+
+
+/*
+ * Inspects the SV indicated by svp, and returns a null pointer if
+ * it's an undefined value, or a string allocation from `stream'
+ * otherwise.  Using this when filling in addinfo avoids those
+ * irritating "Use of uninitialized value in subroutine entry"
+ * warnings from Perl.
+ */
+char *string_or_undef(SV **svp, ODR stream) {
+	STRLEN len;
+	char *ptr, *buf;
+
+	if (!SvOK(*svp))
+		return 0;
+
+	ptr = SvPV(*svp, len);
+	buf = (char*) odr_malloc(stream, len+1);
+	strcpy(buf, ptr);
+	return buf;
+}
+
 
 CV * simpleserver_sv2cv(SV *handler) {
     STRLEN len;
@@ -129,7 +156,7 @@ void tst_clones(void)
 
 int simpleserver_clone(void) {
 #ifdef USE_ITHREADS
-     nmem_mutex_enter(simpleserver_mutex);
+     yaz_mutex_enter(simpleserver_mutex);
      if (1)
      {
          PerlInterpreter *current = PERL_GET_CONTEXT;
@@ -145,14 +172,14 @@ int simpleserver_clone(void) {
              PERL_SET_CONTEXT( perl_interp );
          }
      }
-     nmem_mutex_leave(simpleserver_mutex);
+     yaz_mutex_leave(simpleserver_mutex);
 #endif
      return 0;
 }
 
 
 void simpleserver_free(void) {
-    nmem_mutex_enter(simpleserver_mutex);
+    yaz_mutex_enter(simpleserver_mutex);
     if (1)
     {
         PerlInterpreter *current_interp = PERL_GET_CONTEXT;
@@ -167,7 +194,7 @@ void simpleserver_free(void) {
             perl_free(current_interp);
 	}
     }
-    nmem_mutex_leave(simpleserver_mutex);
+    yaz_mutex_leave(simpleserver_mutex);
 }
 
 
@@ -226,21 +253,18 @@ Z_GenericRecord *read_grs1(char *str, ODR o)
 			exit(0);
 		}
 		r->elements[r->num_elements] = t = (Z_TaggedElement *) odr_malloc(o, sizeof(Z_TaggedElement));
-		t->tagType = (int *)odr_malloc(o, sizeof(int));
-		*t->tagType = type;
+		t->tagType = odr_intdup(o, type);
 		t->tagValue = (Z_StringOrNumeric *)
 			odr_malloc(o, sizeof(Z_StringOrNumeric));
 		if ((ivalue = atoi(value)))
 		{
 			t->tagValue->which = Z_StringOrNumeric_numeric;
-			t->tagValue->u.numeric = (int *)odr_malloc(o, sizeof(int));
-			*t->tagValue->u.numeric = ivalue;
+			t->tagValue->u.numeric = odr_intdup(o, ivalue);
 		}
 		else
 		{
 			t->tagValue->which = Z_StringOrNumeric_string;
-			t->tagValue->u.string = (char *)odr_malloc(o, strlen(value)+1);
-			strcpy(t->tagValue->u.string, value);
+			t->tagValue->u.string = odr_strdup(o, value);
 		}
 		t->tagOccurrence = 0;
 		t->metaData = 0;
@@ -262,7 +286,6 @@ Z_GenericRecord *read_grs1(char *str, ODR o)
 
 
 
-
 static void oid2str(Odr_oid *o, WRBUF buf)
 {
     for (; *o >= 0; o++) {
@@ -274,6 +297,13 @@ static void oid2str(Odr_oid *o, WRBUF buf)
     }
 }
 
+WRBUF oid2dotted(Odr_oid *oid)
+{
+    WRBUF buf = wrbuf_alloc();
+    oid2str(oid, buf);
+    return buf;
+}
+		
 
 WRBUF zquery2pquery(Z_Query *q)
 {
@@ -461,7 +491,7 @@ int simpleserver_ExpandSortAttributes (HV *sort_spec, Z_SortAttributes *sattr)
     oid2str(sattr->id, attrset_wr);
     hv_store(sort_spec, "ATTRSET", 7,
              newSVpv(attrset_wr->buf, attrset_wr->pos), 0);
-    wrbuf_free(attrset_wr, 1);
+    wrbuf_destroy(attrset_wr);
 
     hv_store(sort_spec, "SORT_ATTR", 9, newRV( sv_2mortal( (SV*) list ) ), 0);
 
@@ -518,7 +548,7 @@ int simpleserver_SortKeySpecToHash (HV *sort_spec, Z_SortKeySpec *spec)
                 oid2str(zspec->schema.oid, elementSpec);
                 hv_store(sort_spec, "ELEMENTSPEC_VALUE", 17,
                          newSVpv(elementSpec->buf, elementSpec->pos), 0);
-                wrbuf_free(elementSpec, 1);
+                wrbuf_destroy(elementSpec);
             }
             else if (zspec->which == Z_Schema_uri)
             {
@@ -609,6 +639,7 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 	hv_store(href, "INPUT", 5, newRV( (SV*) aref), 0);
 	hv_store(href, "OUTPUT", 6, newSVpv(rr->output_setname, 0), 0);
         hv_store(href, "SEQUENCE", 8, newRV( (SV*) sort_seq), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "STATUS", 6, newSViv(0), 0);
         hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
@@ -670,12 +701,9 @@ int bend_search(void *handle, bend_search_rr *rr)
 	HV *href;
 	AV *aref;
 	SV **temp;
-	char *ODR_errstr;
-	STRLEN len;
 	int i;
 	char **basenames;
 	WRBUF query;
-	char *ptr;
 	SV *point;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
 	CV* handler_cv = 0;
@@ -706,6 +734,7 @@ int bend_search(void *handle, bend_search_rr *rr)
 	hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
 	hv_store(href, "HITS", 4, newSViv(0), 0);
 	hv_store(href, "DATABASES", 9, newRV( (SV*) aref), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
 	if ((rpnSV = zquery2perl(rr->query)) != 0) {
@@ -744,10 +773,7 @@ int bend_search(void *handle, bend_search_rr *rr)
 	rr->errcode = SvIV(*temp);
 
 	temp = hv_fetch(href, "ERR_STR", 7, 1);
-	ptr = SvPV(*temp, len);
-	ODR_errstr = (char *)odr_malloc(rr->stream, len + 1);
-	strcpy(ODR_errstr, ptr);
-	rr->errstring = ODR_errstr;
+	rr->errstring = string_or_undef(temp, rr->stream);
 
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
@@ -759,75 +785,10 @@ int bend_search(void *handle, bend_search_rr *rr)
 	sv_free( (SV*) aref);
 	sv_free( (SV*) href);
 	if (query)
-	    wrbuf_free(query, 1);
+	    wrbuf_destroy(query);
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
-	return 0;
-}
-
-
-/* ### this is worryingly similar to oid2str() */
-WRBUF oid2dotted(int *oid)
-{
-
-	WRBUF buf = wrbuf_alloc();
-	int dot = 0;
-
-	for (; *oid != -1 ; oid++)
-	{
-		char ibuf[16];
-		if (dot)
-		{
-			wrbuf_putc(buf, '.');
-		}
-		else
-		{
-			dot = 1;
-		}
-		sprintf(ibuf, "%d", *oid);
-		wrbuf_puts(buf, ibuf);
-	}
-	return buf;
-}
-		
-
-int dotted2oid(char *dotted, int *buffer)
-{
-        int *oid;
-        char ibuf[16];
-        char *ptr;
-        int n = 0;
-
-        ptr = ibuf;
-        oid = buffer;
-        while (*dotted)
-        {
-                if (*dotted == '.')
-                {
-                        n++;
-			if (n == MAX_OID)  /* Terminate if more than MAX_OID entries */
-			{
-				*oid = -1;
-				return -1;
-			}
-                        *ptr = 0;
-                        sscanf(ibuf, "%d", oid++);
-                        ptr = ibuf;
-                        dotted++;
-
-                }
-                else
-                {
-                        *ptr++ = *dotted++;
-                }
-        }
-        if (n < MAX_OID)
-	{
-		*ptr = 0;
-        	sscanf(ibuf, "%d", oid++);
-	}
-        *oid = -1;
 	return 0;
 }
 
@@ -849,8 +810,6 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	char *ODR_record;
 	char *ODR_basename;
 	char *ODR_errstr;
-	int *ODR_oid_buf;
-	oident *oid;
 	WRBUF oid_dotted;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
 	CV* handler_cv = 0;
@@ -869,9 +828,12 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	hv_store(href, "SETNAME", 7, newSVpv(rr->setname, 0), 0);
 	if (rr->schema)
 		hv_store(href, "SCHEMA", 6, newSVpv(rr->schema, 0), 0);
+        else
+                hv_store(href, "SCHEMA", 6, newSVpv("", 0), 0);
+
 	temp = hv_store(href, "OFFSET", 6, newSViv(rr->number), 0);
-	if (rr->request_format_raw != 0) {
-	    oid_dotted = oid2dotted(rr->request_format_raw);
+	if (rr->request_format != 0) {
+	    oid_dotted = oid2dotted(rr->request_format);
 	} else {
 	    /* Probably an SRU request: assume XML is required */
 	    oid_dotted = wrbuf_alloc();
@@ -885,6 +847,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
 	hv_store(href, "SUR_FLAG", 8, newSViv(0), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
 	if (rr->comp)
@@ -985,16 +948,18 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	rr->basename = ODR_basename;
 
 	ptr = SvPV(rep_form, length);
-	ODR_oid_buf = (int *)odr_malloc(rr->stream, (MAX_OID + 1) * sizeof(int));
-	if (dotted2oid(ptr, ODR_oid_buf) == -1)		/* Maximum number of OID elements exceeded */
+
+	rr->output_format = yaz_string_to_oid_odr(yaz_oid_std(),
+					CLASS_RECSYN, ptr, rr->stream);
+	if (!rr->output_format)
 	{
-		printf("Net::Z3950::SimpleServer: WARNING: OID structure too long, max length is %d\n", MAX_OID);
+		printf("Net::Z3950::SimpleServer: WARNING: Bad OID %s\n", ptr);
+		rr->output_format =
+			odr_oiddup(rr->stream, yaz_oid_recsyn_sutrs);
 	}
-	rr->output_format_raw = ODR_oid_buf;	
-	
 	ptr = SvPV(record, length);
-	oid = oid_getentbyoid(ODR_oid_buf);
-	if (oid->value == VAL_GRS1)		/* Treat GRS-1 records separately */
+        /* Treat GRS-1 records separately */
+	if (!oid_oidcmp(rr->output_format, yaz_oid_recsyn_grs_1))
 	{
 		rr->record = (char *) read_grs1(ptr, rr->stream);
 		rr->len = -1;
@@ -1020,7 +985,7 @@ int bend_fetch(void *handle, bend_fetch_rr *rr)
 	}
 	rr->surrogate_flag = SvIV(sur_flag);
 
-	wrbuf_free(oid_dotted, 1);
+	wrbuf_destroy(oid_dotted);
 	sv_free((SV*) href);
 	sv_free(basename);
 	sv_free(record);
@@ -1065,6 +1030,7 @@ int bend_present(void *handle, bend_present_rr *rr)
 	SAVETMPS;
 
 	href = newHV();
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
         hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
@@ -1222,6 +1188,7 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 	hv_store(href, "POS", 3, newSViv(rr->term_position), 0);
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSVpv("", 0), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 	hv_store(href, "STATUS", 6, newSViv(BEND_SCAN_SUCCESS), 0);
 	hv_store(href, "ENTRIES", 7, newRV((SV *) list), 0);
@@ -1325,6 +1292,7 @@ int bend_explain(void *handle, bend_explain_rr *q)
 	href = newHV();
 	hv_store(href, "EXPLAIN", 7, newSVpv("", 0), 0);
 	hv_store(href, "DATABASE", 8, newSVpv(q->database, 0), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 
 	PUSHMARK(sp);
@@ -1369,6 +1337,7 @@ bend_initresult *bend_init(bend_initrequest *q)
 	ENTER;
 	SAVETMPS;
 
+	zhandle->ghandle = _global_ghandle;
 	zhandle->nmem = nmem;
 	zhandle->stop_flag = 0;
 
@@ -1406,6 +1375,7 @@ bend_initresult *bend_init(bend_initrequest *q)
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSViv(0), 0);
 	hv_store(href, "PEER_NAME", 9, newSVpv(q->peer_name, 0), 0);
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 	hv_store(href, "HANDLE", 6, newSVsv(&sv_undef), 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
 	if (q->auth) {
@@ -1494,6 +1464,7 @@ void bend_close(void *handle)
 	if (close_ref)
 	{
 		href = newHV();
+		hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
 		hv_store(href, "HANDLE", 6, zhandle->handle, 0);
 
 		PUSHMARK(sp);
@@ -1528,6 +1499,13 @@ MODULE = Net::Z3950::SimpleServer	PACKAGE = Net::Z3950::SimpleServer
 
 PROTOTYPES: DISABLE
 
+
+void
+set_ghandle(arg)
+		SV *arg
+	CODE:
+		_global_ghandle = newSVsv(arg);
+		
 
 void
 set_init_handler(arg)
@@ -1615,7 +1593,7 @@ start_server(...)
 		}
 		*argv_buf = NULL;
 		root_perl_context = PERL_GET_CONTEXT;
-		nmem_mutex_create(&simpleserver_mutex);
+		yaz_mutex_create(&simpleserver_mutex);
 #if 0
 		/* only for debugging perl_clone .. */
 		tst_clones();
@@ -1649,3 +1627,12 @@ yazlog(arg)
 		char *ptr;
 		ptr = SvPV(arg, len);
 		yaz_log(YLOG_LOG, "%.*s", len, ptr);
+
+int
+yaz_diag_srw_to_bib1(srw_code)
+	int srw_code
+
+int
+yaz_diag_bib1_to_srw(bib1_code)
+	int bib1_code
+

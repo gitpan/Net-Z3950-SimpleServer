@@ -1,3 +1,5 @@
 .cvsignore
 CVS
 TODO
+archive
+debian
