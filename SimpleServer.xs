@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.67 2007/08/10 16:44:00 mike Exp $ 
+ * $Id: SimpleServer.xs,v 1.76 2007/08/20 21:27:50 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -32,6 +32,7 @@
 #include "proto.h"
 #include "embed.h"
 #include "XSUB.h"
+#include <assert.h>
 #include <yaz/backend.h>
 #include <yaz/log.h>
 #include <yaz/wrbuf.h>
@@ -395,69 +396,97 @@ static SV *translateOID(Odr_oid *x)
 }
 
 
-static SV *rpn2perl(Z_RPNStructure *s)
+static SV *apt2perl(Z_AttributesPlusTerm *at)
 {
     SV *sv;
     HV *hv;
     AV *av;
 
-    switch (s->which) {
-    case Z_RPNStructure_simple: {
-	Z_Operand *o = s->u.simple;
-	Z_AttributesPlusTerm *at;
-	if (o->which == Z_Operand_resultSetId) {
-	    SV *sv2;
-	    /* This code causes a SIGBUS on my machine, and I have no
-	       idea why.  It seems as clear as day to me */
-	    char *rsid = (char*) o->u.resultSetId;
-	    printf("Encoding resultSetId '%s'\n", rsid);
-	    sv = newObject("Net::Z3950::RPN::RSID", (SV*) (hv = newHV()));
-	    printf("Made sv=0x%lx, hv=0x%lx\n",
-		   (unsigned long) sv ,(unsigned long) hv);
-	    sv2 = newSVpv(rsid, strlen(rsid));
-	    setMember(hv, "id", sv2);
-	    printf("Set hv{id} to 0x%lx\n", (unsigned long) sv2);
-	    return sv;
-	}
-	if (o->which != Z_Operand_APT)
-	    fatal("can't handle RPN simples other than APT and RSID");
-	at = o->u.attributesPlusTerm;
-	if (at->term->which != Z_Term_general)
-	    fatal("can't handle RPN terms other than general");
+    if (at->term->which != Z_Term_general)
+	fatal("can't handle RPN terms other than general");
 
-	sv = newObject("Net::Z3950::RPN::Term", (SV*) (hv = newHV()));
-	if (at->attributes) {
-	    int i;
-	    SV *attrs = newObject("Net::Z3950::RPN::Attributes",
-				  (SV*) (av = newAV()));
-	    for (i = 0; i < at->attributes->num_attributes; i++) {
-		Z_AttributeElement *elem = at->attributes->attributes[i];
-		HV *hv2;
-		SV *tmp = newObject("Net::Z3950::RPN::Attribute",
-				    (SV*) (hv2 = newHV()));
-		if (elem->attributeSet)
-		    setMember(hv2, "attributeSet",
-			      translateOID(elem->attributeSet));
-		setMember(hv2, "attributeType",
-			  newSViv(*elem->attributeType));
-		assert(elem->which == Z_AttributeValue_numeric);
+    sv = newObject("Net::Z3950::RPN::Term", (SV*) (hv = newHV()));
+    if (at->attributes) {
+	int i;
+	SV *attrs = newObject("Net::Z3950::RPN::Attributes",
+			      (SV*) (av = newAV()));
+	for (i = 0; i < at->attributes->num_attributes; i++) {
+	    Z_AttributeElement *elem = at->attributes->attributes[i];
+	    HV *hv2;
+	    SV *tmp = newObject("Net::Z3950::RPN::Attribute",
+				(SV*) (hv2 = newHV()));
+	    if (elem->attributeSet)
+		setMember(hv2, "attributeSet",
+			  translateOID(elem->attributeSet));
+	    setMember(hv2, "attributeType",
+		      newSViv(*elem->attributeType));
+	    if (elem->which == Z_AttributeValue_numeric) {
 		setMember(hv2, "attributeValue",
 			  newSViv(*elem->value.numeric));
-		av_push(av, tmp);
+	    } else {
+		assert(elem->which == Z_AttributeValue_complex);
+		Z_ComplexAttribute *c = elem->value.complex;
+		Z_StringOrNumeric *son;
+		/* We ignore semantic actions and multiple values */
+		assert(c->num_list > 0);
+		son = c->list[0];
+		if (son->which == Z_StringOrNumeric_numeric) {
+		    setMember(hv2, "attributeValue",
+			      newSViv(*son->u.numeric));
+		} else { /*Z_StringOrNumeric_string*/
+		    setMember(hv2, "attributeValue",
+			      newSVpv(son->u.string, 0));
+		}
 	    }
-	    setMember(hv, "attributes", attrs);
+	    av_push(av, tmp);
 	}
-	setMember(hv, "term", newSVpv((char*) at->term->u.general->buf,
-				      at->term->u.general->len));
-	return sv;
+	setMember(hv, "attributes", attrs);
     }
+    setMember(hv, "term", newSVpv((char*) at->term->u.general->buf,
+				  at->term->u.general->len));
+    return sv;
+}
+
+
+static SV *rpn2perl(Z_RPNStructure *s)
+{
+    SV *sv;
+    HV *hv;
+    AV *av;
+    Z_Operand *o;
+
+    switch (s->which) {
+    case Z_RPNStructure_simple:
+	o = s->u.simple;
+	switch (o->which) {
+	case Z_Operand_resultSetId: {
+	    /* This code causes a SIGBUS on my machine, and I have no
+	       idea why.  It seems as clear as day to me */
+	    SV *sv2;
+	    char *rsid = (char*) o->u.resultSetId;
+	    /*printf("Encoding resultSetId '%s'\n", rsid);*/
+	    sv = newObject("Net::Z3950::RPN::RSID", (SV*) (hv = newHV()));
+	    /*printf("Made sv=0x%lx, hv=0x%lx\n", (unsigned long) sv ,(unsigned long) hv);*/
+	    sv2 = newSVpv(rsid, strlen(rsid));
+	    setMember(hv, "id", sv2);
+	    /*printf("Set hv{id} to 0x%lx\n", (unsigned long) sv2);*/
+	    return sv;
+	}
+
+	case  Z_Operand_APT:
+	    return apt2perl(o->u.attributesPlusTerm);
+
+	default:
+	    fatal("unknown RPN simple type %d", (int) o->which);
+	}
+
     case Z_RPNStructure_complex: {
 	SV *tmp;
 	Z_Complex *c = s->u.complex;
 	char *type = 0;		/* vacuous assignment satisfies gcc -Wall */
 	switch (c->roperator->which) {
-	case Z_Operator_and:     type = "Net::Z3950::RPN::And"; break;
-	case Z_Operator_or:      type = "Net::Z3950::RPN::Or"; break;
+	case Z_Operator_and:     type = "Net::Z3950::RPN::And";    break;
+	case Z_Operator_or:      type = "Net::Z3950::RPN::Or";     break;
 	case Z_Operator_and_not: type = "Net::Z3950::RPN::AndNot"; break;
 	case Z_Operator_prox:    fatal("proximity not yet supported");
 	default: fatal("unknown RPN operator %d", (int) c->roperator->which);
@@ -471,9 +500,11 @@ static SV *rpn2perl(Z_RPNStructure *s)
 	av_push(av, tmp);
 	return sv;
     }
-    default: fatal("unknown RPN node type %d", (int) s->which);
-    }
 
+    default:
+	fatal("unknown RPN node type %d", (int) s->which);
+    }
+    
     return 0;
 }
 
@@ -789,6 +820,78 @@ int bend_search(void *handle, bend_search_rr *rr)
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
+	return 0;
+}
+
+
+/* ### I am not 100% about the memory management in this handler */
+int bend_delete(void *handle, bend_delete_rr *rr)
+{
+	Zfront_handle *zhandle = (Zfront_handle *)handle;
+	HV *href;
+	CV* handler_cv;
+	int i;
+	SV **temp;
+	SV *point;
+
+	dSP;
+	ENTER;
+	SAVETMPS;
+
+	href = newHV();
+	hv_store(href, "GHANDLE", 7, newSVsv(zhandle->ghandle), 0);
+	hv_store(href, "HANDLE", 6, zhandle->handle, 0);
+	hv_store(href, "STATUS", 6, newSViv(0), 0);
+
+	PUSHMARK(sp);
+	XPUSHs(sv_2mortal(newRV( (SV*) href)));
+	PUTBACK;
+
+	handler_cv = simpleserver_sv2cv(delete_ref);
+
+	if (rr->function == 1) {
+	    /* Delete all result sets in the session */
+	    perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
+	    temp = hv_fetch(href, "STATUS", 6, 1);
+	    rr->delete_status = SvIV(*temp);
+	} else {
+	    rr->delete_status = 0;
+	    /*
+	     * For some reason, deleting two or more result-sets in
+	     * one operation goes horribly wrong, and ### I don't have
+	     * time to debug it right now.
+	     */
+	    if (rr->num_setnames > 1) {
+		rr->delete_status = 3; /* "System problem at target" */
+		/* There's no way to sent delete-msg using the GFS */
+		return;
+	    }
+
+	    for (i = 0; i < rr->num_setnames; i++) {
+		hv_store(href, "SETNAME", 7, newSVpv(rr->setnames[i], 0), 0);
+		perl_call_sv( (SV *) handler_cv, G_SCALAR | G_DISCARD);
+		temp = hv_fetch(href, "STATUS", 6, 1);
+		rr->statuses[i] = SvIV(*temp);
+		if (rr->statuses[i] != 0)
+		    rr->delete_status = rr->statuses[i];
+	    }
+	}
+
+	SPAGAIN;
+
+	temp = hv_fetch(href, "HANDLE", 6, 1);
+	point = newSVsv(*temp);
+
+	hv_undef(href);
+
+	zhandle->handle = point;
+
+	sv_free( (SV*) href);	
+
+	PUTBACK;
+	FREETMPS;
+	LEAVE;
+
 	return 0;
 }
 
@@ -1137,13 +1240,6 @@ int bend_esrequest(void *handle, bend_esrequest_rr *rr)
 }
 
 
-int bend_delete(void *handle, bend_delete_rr *rr)
-{
-	perl_call_sv(delete_ref, G_VOID | G_DISCARD | G_NOARGS);
-	return 0;
-}
-
-
 int bend_scan(void *handle, bend_scan_rr *rr)
 {
         HV *href;
@@ -1169,12 +1265,19 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 	SV *entries_ref;
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
 	CV* handler_cv = 0;
+	SV *rpnSV;
 
 	dSP;
 	ENTER;
 	SAVETMPS;
 	href = newHV();
 	list = newAV();
+
+	/* RPN is better than TERM since it includes attributes */
+	if ((rpnSV = apt2perl(rr->term)) != 0) {
+	    setMember(href, "RPN", rpnSV);
+	}
+
 	if (rr->term->term->which == Z_Term_general)
 	{
 		term_len = rr->term->term->u.general->len;
@@ -1243,7 +1346,7 @@ int bend_scan(void *handle, bend_scan_rr *rr)
         scan_list = (struct scan_entry *) odr_malloc (rr->stream, rr->num_entries * sizeof(*scan_list));
 	buffer = scan_list;
 	entries = (AV *)SvRV(entries_ref);
-	for (i = 0; i < rr->num_entries; i++)
+	if (rr->errcode == 0) for (i = 0; i < rr->num_entries; i++)
 	{
 		scan_item = (HV *)SvRV(sv_2mortal(av_shift(entries)));
 		temp = hv_fetch(scan_item, "TERM", 4, 1);
@@ -1354,7 +1457,9 @@ bend_initresult *bend_init(bend_initrequest *q)
 		q->bend_present = bend_present;
 	}
 	/*q->bend_esrequest = bend_esrequest;*/
-	/*q->bend_delete = bend_delete;*/
+	if (delete_ref) {
+		q->bend_delete = bend_delete;
+	}
 	if (fetch_ref)
 	{
 		q->bend_fetch = bend_fetch;

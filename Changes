@@ -1,6 +1,32 @@
-$Id: Changes,v 1.36 2007/08/10 22:29:58 mike Exp $
+$Id: Changes,v 1.44 2007/09/01 09:31:51 mike Exp $
 
 Revision history for Perl extension Net::Z3950::SimpleServer
+
+1.07  Sat Sep  1 10:31:26 BST 2007
+	- When the scan-handler callback returns, do not attempt to
+	  copy the terms from Perl structures if the error-code is
+	  non-zero (i.e. if an error has occurred).  This protects
+	  against a segmentation fault when the Perl callback does not
+	  explicitly set $args->{NUMBER} = 0 on error.
+	- Correct transcription of string-valued attributes in
+	  $args->{RPN}.
+	- Scan handler is now passed RPN as well as TERM, a tree of
+	  Perl structures representing the entire scan clause
+	  including access-points and other attributes (which are
+	  discarded from TERM).
+	- The various classes used to represent nodes in the RPN query
+	  tree (Net::Z3950::APDU::Query, Net::Z3950::RPN::And,
+	  Net::Z3950::RPN::Or, Net::Z3950::RPN::AndNot,
+	  Net::Z3950::RPN::Term and Net::Z3950::RPN::RSID) now all
+	  share a newly introduced superclass Net::Z3950::RPN::Node,
+	  making it possible to write methods that apply to all node
+	  types.
+	- A utility method toPQF() is provided for
+	  Net::Z3950::RPN::Node, enabling the RPN tree to be converted
+	  back into a flat PQF query.
+	- Add support for the Delete Result Set service.
+	- Add documentation for the Sort service.
+	- Some clarifications to documentation.
 
 1.06  Fri Aug 10 23:30:00 BST 2007
 	- New global-handle element can be specified when creating a

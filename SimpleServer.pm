@@ -25,7 +25,7 @@
 ##
 ##
 
-## $Id: SimpleServer.pm,v 1.33 2007/08/08 12:09:19 mike Exp $
+## $Id: SimpleServer.pm,v 1.42 2007/08/21 16:29:29 mike Exp $
 
 package Net::Z3950::SimpleServer;
 
@@ -39,7 +39,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.06';
+$VERSION = '1.07';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -96,21 +96,68 @@ sub launch_server {
 	if (defined($self->{EXPLAIN})) {
 		set_explain_handler($self->{EXPLAIN});
 	}
+	if (defined($self->{DELETE})) {
+		set_delete_handler($self->{DELETE});
+	}
 
 	start_server(@args);
 }
 
 
 # Register packages that we will use in translated RPNs
+package Net::Z3950::RPN::Node;
 package Net::Z3950::APDU::Query;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::APDU::OID;
 package Net::Z3950::RPN::And;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::Or;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::AndNot;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::Term;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::RSID;
+our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::Attributes;
 package Net::Z3950::RPN::Attribute;
+
+
+# Utility method for re-rendering Type-1 query back down to PQF
+package Net::Z3950::RPN::Node;
+
+sub toPQF {
+    my $this = shift();
+    my $class = ref $this;
+
+    if ($class eq "Net::Z3950::APDU::Query") {
+	my $res = "";
+	my $set = $this->{attributeSet};
+	$res .= "\@attrset $set " if defined $set;
+	return $res . $this->{query}->toPQF();
+    } elsif ($class eq "Net::Z3950::RPN::Or") {
+	return '@or ' . $this->[0]->toPQF() . ' ' . $this->[1]->toPQF();
+    } elsif ($class eq "Net::Z3950::RPN::And") {
+	return '@and ' . $this->[0]->toPQF() . ' ' . $this->[1]->toPQF();
+    } elsif ($class eq "Net::Z3950::RPN::AndNot") {
+	return '@not ' . $this->[0]->toPQF() . ' ' . $this->[1]->toPQF();
+    } elsif ($class eq "Net::Z3950::RPN::RSID") {
+	return '@set ' . $this->{id};
+    } elsif ($class ne "Net::Z3950::RPN::Term") {
+	die "unknown PQF node-type '$class'";
+    }
+
+    my $res = "";
+    foreach my $attr (@{ $this->{attributes} }) {
+	$res .= "\@attr ";
+	my $set = $attr->{attributeSet};
+	$res .= "$set " if defined $set;
+	$res .= $attr->{attributeType} . "=" . $attr->{attributeValue} . " ";
+    }
+
+    return $res . $this->{term};
+}
+
 
 # Must revert to original package for Autoloader's benefit
 package Net::Z3950::SimpleServer;
@@ -222,7 +269,9 @@ means of the SimpleServer object constructor
 			PRESENT	=>	\&my_present_handler,
 			SCAN	=>	\&my_scan_handler,
 			FETCH	=>	\&my_fetch_handler,
-  			EXPLAIN =>	\&my_explain_handler);
+  			EXPLAIN =>	\&my_explain_handler,
+  			DELETE  =>	\&my_delete_handler,
+  			SORT    =>	\&my_sort_handler);
 
 In addition, the arguments to the constructor may include GHANDLE, a
 global handle which is made available to each invocation of every
@@ -418,9 +467,6 @@ of the result-set is in the C<id> element.
 
 =back
 
-(I guess I should make a superclass C<Net::Z3950::RPN::Node> and make
-all of these subclasses of it.  Not done that yet, but will do one day.)
-
 =back
 
 =over 4
@@ -469,7 +515,7 @@ a ``relation'' attribute, etc.
 
 =item C<attributeValue>
 
-An integer indicating the value of the attribute - for example, under
+An integer or string indicating the value of the attribute - for example, under
 BIB-1, if the attribute type is 1, then value 4 indictates a title
 search and 7 indictates an ISBN search; but if the attribute type is
 2, then value 4 indicates a ``greater than or equal'' search, and 102
@@ -479,7 +525,12 @@ indicates a relevance match.
 
 =back
 
-Note that, at the moment, none of these classes have any methods at
+All of these classes except C<Attributes> and C<Attribute> are
+subclasses of the abstract class C<Net::Z3950::RPN::Node>.  That class
+has a single method, C<toPQF()>, which may be used to turn an RPN
+tree, or part of one, back into a textual prefix query.
+
+Note that, apart to C<toPQF()>, none of these classes have any methods at
 all: the blessing into classes is largely just a documentation thing
 so that, for example, if you do
 
@@ -596,9 +647,13 @@ an index of a book, you always find something! The parameters exchanged are
   $args = {
 						## Client request
 
-		GHANDLE		=> $obj		## Global handler specified at creation
-		HANDLE		=> $ref		## Reference to data structure
+		GHANDLE		=> $obj,	## Global handler specified at creation
+		HANDLE		=> $ref,	## Reference to data structure
+		DATABASES	=> ["xxx"],	## Reference to a list of data-
+						## bases to search
 		TERM		=> 'start',	## The start term
+		RPN		=>  $obj,       ## Reference to a Net::Z3950::RPN::Term
+
 		NUMBER		=> xx,		## Number of requested terms
 		POS		=> yy,		## Position of starting point
 						## within returned list
@@ -631,13 +686,22 @@ should point at a data structure of this kind,
 				...
 	];
 
-The $status flag should be assigned one of two values:
+The $status flag is only meaningful after a successful scan, and
+should be assigned one of two values:
 
-  Net::Z3950::SimpleServer::ScanSuccess  On success (default)
-  Net::Z3950::SimpleServer::ScanPartial  Less terms returned than requested
+  Net::Z3950::SimpleServer::ScanSuccess  Full success (default)
+  Net::Z3950::SimpleServer::ScanPartial  Fewer terms returned than requested
 
 The STEP member contains the requested number of entries in the term-list
 between two adjacent entries in the response.
+
+A better alternative to the TERM member is the the RPN
+member, which is a reference to a Net::Z3950::RPN::Term object
+representing the scan cloause.  The structure of that object is the
+same as for Term objects included as part of the RPN tree passed to
+search handlers.  This is more useful than the simple TERM because it
+includes attributes (e.g. access points associated with the term),
+which are discarded by the TERM element.
 
 =head2 Close handler
 
@@ -653,6 +717,108 @@ The argument hash recieved by the close handler has two elements only:
 What ever data structure the HANDLE value points at goes out of scope
 after this call. If you need to close down a connection to your server
 or something similar, this is the place to do it.
+
+=head2 Delete handler
+
+The argument hash recieved by the delete handler has the following elements:
+
+  $args = {
+				    ## Client request:
+	     GHANDLE   =>  $obj,    ## Global handler specified at creation
+	     HANDLE    =>  ref,     ## Reference to data structure
+	     SETNAME   =>  "id",    ## Result set ID
+
+				    ## Server response:
+	     STATUS    => 0         ## Deletion status
+	  };
+
+The SETNAME element of the argument hash may or may not be defined.
+If it is, then SETNAME is the name of a result set to be deleted; if
+not, then all result-sets associated with the current session should
+be deleted.  In either case, the callback function should report on
+success or failure by setting the STATUS element either to zero, on
+success, or to an integer from 1 to 10, to indicate one of the ten
+possible failure codes described in section 3.2.4.1.4 of the Z39.50
+standard -- see 
+http://www.loc.gov/z3950/agency/markup/05.html#Delete-list-statuses1
+
+=head2 Sort handler
+
+The argument hash recieved by the sort handler has the following elements:
+
+	$args = {
+					## Client request:
+		GHANDLE => $obj,	## Global handler specified at creation
+		HANDLE => ref,		## Reference to data structure
+		INPUT => [ a, b ... ],	## Names of result-sets to sort
+		OUTPUT => "name",	## Name of result-set to sort into
+		SEQUENCE		## Sort specification: see below
+
+					## Server response:
+		STATUS => 0,		## Success, Partial or Failure
+		ERR_CODE => 0,		## Error code
+		ERR_STR => '',		## Diagnostic message
+
+	};
+
+The SEQUENCE element is a reference to an array, each element of which
+is a hash representing a sort key.  Each hash contains the following
+elements:
+
+=over 4
+
+=item RELATION
+
+0 for an ascending sort, 1 for descending, 3 for ascending by
+frequency, or 4 for descending by frequency.
+
+=item CASE
+
+0 for a case-sensitive sort, 1 for case-insensitive
+
+=item MISSING
+
+How to respond if one or more records in the set to be sorted are
+missing the fields indicated in the sort specification.  1 to abort
+the sort, 2 to use a "null value", 3 if a value is provided to use in
+place of the missing data (although in the latter case, the actual
+value to use is currently not made available, so this is useless).
+
+=back
+
+And one or other of the following:
+
+=over 4
+
+=item SORTFIELD
+
+A string indicating the field to be sorted, which the server may
+interpret as it sees fit (presumably by an out-of-band agreement with
+the client).
+
+=item ELEMENTSPEC_TYPE and ELEMENTSPEC_VALUE
+
+I have no idea what this is.
+
+=item ATTRSET and SORT_ATTR
+
+ATTRSET is the attribute set from which the attributes are taken, and
+SORT_ATTR is a reference to an array containing the attributes
+themselves.  Each attribute is represented by (are you following this
+carefully?) yet another hash, this one containing the elements
+ATTR_TYPE and ATTR_VALUE: for example, type=1 and value=4 in the BIB-1
+attribute set would indicate access-point 4 which is title, so that a
+sort of title is requested.
+
+=back
+
+Precisely why all of the above is so is not clear, but goes some way
+to explain why, in the Z39.50 world, the developers of the standard
+are not so much worshipped as blamed.
+
+The backend function should set STATUS to 0 on success, 1 for "partial
+success" (don't ask) or 2 on failure, in which case ERR_CODE and
+ERR_STR should be set.
 
 =head2 Support for SRU and SRW
 
