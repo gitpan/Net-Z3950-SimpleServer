@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.79 2007/09/10 14:50:31 mike Exp $ 
+ * $Id: SimpleServer.xs,v 1.83 2008-09-02 15:16:34 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -865,7 +865,7 @@ int bend_delete(void *handle, bend_delete_rr *rr)
 	    if (rr->num_setnames > 1) {
 		rr->delete_status = 3; /* "System problem at target" */
 		/* There's no way to sent delete-msg using the GFS */
-		return;
+		return 0;
 	    }
 
 	    for (i = 0; i < rr->num_setnames; i++) {
@@ -1428,6 +1428,21 @@ int bend_explain(void *handle, bend_explain_rr *q)
         return 0;
 }
 
+
+/*
+ * You'll laugh when I tell you this ...  Astonishingly, it turns out
+ * that ActivePerl (which is widely used on Windows) has, in the
+ * header file Perl\lib\CORE\XSUB.h, the following heinous crime:
+ *	    #    define open		PerlLIO_open
+ * This of course screws up the use of the "open" member of the
+ * Z_IdAuthentication structure below, so we have to undo this
+ * brain-damage.
+ */
+#ifdef open
+#undef open
+#endif
+
+
 bend_initresult *bend_init(bend_initrequest *q)
 {
 	int dummy = simpleserver_clone();
@@ -1481,9 +1496,12 @@ bend_initresult *bend_init(bend_initrequest *q)
 	}
 
        	href = newHV();	
+
+	/* ### These should be given initial values from the client */
 	hv_store(href, "IMP_ID", 6, newSVpv("", 0), 0);
 	hv_store(href, "IMP_NAME", 8, newSVpv("", 0), 0);
 	hv_store(href, "IMP_VER", 7, newSVpv("", 0), 0);
+
 	hv_store(href, "ERR_CODE", 8, newSViv(0), 0);
 	hv_store(href, "ERR_STR", 7, newSViv(0), 0);
 	hv_store(href, "PEER_NAME", 9, newSVpv(q->peer_name, 0), 0);

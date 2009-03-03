@@ -25,7 +25,7 @@
 ##
 ##
 
-## $Id: SimpleServer.pm,v 1.44 2007/09/10 14:54:27 mike Exp $
+## $Id: SimpleServer.pm,v 1.47 2008-04-03 10:46:46 mike Exp $
 
 package Net::Z3950::SimpleServer;
 
@@ -39,7 +39,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.09';
+$VERSION = '1.10';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -301,7 +301,7 @@ by means of the method
 Notice, the first argument should be the name of your server
 script (for logging purposes), while the rest of the arguments
 are documented in the YAZ toolkit manual: The section on
-application invocation: <http://www.indexdata.dk/yaz/yaz-7.php>
+application invocation: <http://indexdata.com/yaz/doc/server.invocation.tkl>
 
 In particular, you need to use the -T switch to start your SimpleServer
 in threaded mode.
@@ -320,6 +320,7 @@ The argument hash passed to the init handler has the form
   $args = {
 				    ## Response parameters:
 
+	     PEER_NAME =>  "",      ## Name or IP address of connecting client
 	     IMP_ID    =>  "",      ## Z39.50 Implementation ID
 	     IMP_NAME  =>  "",      ## Z39.50 Implementation name
 	     IMP_VER   =>  "",      ## Z39.50 Implementation version

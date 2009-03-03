@@ -1,6 +1,6 @@
 package Net::Z3950::GRS1;
 
-##  $Id: GRS1.pm,v 1.6 2004/05/28 20:14:28 sondberg Exp $
+##  $Id: GRS1.pm,v 1.6 2004-05-28 20:14:28 sondberg Exp $
 ##
 ##  Copyright (c) 2000-2004, Index Data.
 ##

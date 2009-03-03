@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-# $Header: /home/cvsroot/simpleserver/samples/render-search.pl,v 1.2 2002/03/05 12:03:26 mike Exp $
+# $Header: /home/cvsroot/simpleserver/samples/render-search.pl,v 1.2 2002-03-05 12:03:26 mike Exp $
 #
 # Trivial example of programming using the "augmented classes"
 # paradigm.  This tiny SimpleServer-based Z39.50 server logs Type-1
