@@ -25,7 +25,7 @@
 ##
 ##
 
-## $Id: SimpleServer.pm,v 1.47 2008-04-03 10:46:46 mike Exp $
+## $Id: SimpleServer.pm,v 1.49 2009-03-04 15:10:23 mike Exp $
 
 package Net::Z3950::SimpleServer;
 
@@ -39,7 +39,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.10';
+$VERSION = '1.11';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -886,9 +886,17 @@ Anders Sønderberg (sondberg@indexdata.dk),
 Sebastian Hammer (quinn@indexdata.dk),
 Mike Taylor (indexdata.com).
 
+=head1 COPYRIGHT AND LICENCE
+
+Copyright (C) 2000-2009 by Index Data.
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.8.4 or,
+at your option, any later version of Perl 5 you may have available.
+
 =head1 SEE ALSO
 
-Any Perl module which is useful for accessing the database of your
+Any Perl module which is useful for accessing the data source of your
 choice.
 
 =cut
