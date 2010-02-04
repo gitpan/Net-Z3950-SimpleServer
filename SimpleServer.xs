@@ -1,5 +1,5 @@
 /*
- * $Id: SimpleServer.xs,v 1.83 2008-09-02 15:16:34 mike Exp $ 
+ * $Id: SimpleServer.xs,v 1.86 2010-02-04 16:30:20 mike Exp $ 
  * ----------------------------------------------------------------------
  * 
  * Copyright (c) 2000-2004, Index Data.
@@ -1119,7 +1119,6 @@ int bend_present(void *handle, bend_present_rr *rr)
 	SV **temp;
 	SV *err_code;
 	SV *err_string;
-	SV *hits;
 	SV *point;
 	STRLEN len;
 	Z_RecordComposition *composition;
@@ -1146,7 +1145,6 @@ int bend_present(void *handle, bend_present_rr *rr)
 	hv_store(href, "NUMBER", 6, newSViv(rr->number), 0);
 	/*oid_dotted = oid2dotted(rr->request_format_raw);
         hv_store(href, "REQ_FORM", 8, newSVpv((char *)oid_dotted->buf, oid_dotted->pos), 0);*/
-	hv_store(href, "HITS", 4, newSViv(0), 0);
 	hv_store(href, "PID", 3, newSViv(getpid()), 0);
 	if (rr->comp)
 	{
@@ -1210,9 +1208,6 @@ int bend_present(void *handle, bend_present_rr *rr)
 	temp = hv_fetch(href, "ERR_STR", 7, 1);
 	err_string = newSVsv(*temp);
 
-	temp = hv_fetch(href, "HITS", 4, 1);
-	hits = newSVsv(*temp);
-
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
 
@@ -1222,7 +1217,6 @@ int bend_present(void *handle, bend_present_rr *rr)
 	
 	hv_undef(href);
 	rr->errcode = SvIV(err_code);
-	rr->hits = SvIV(hits);
 
 	ptr = SvPV(err_string, len);
 	ODR_errstr = (char *)odr_malloc(rr->stream, len + 1);
@@ -1233,7 +1227,6 @@ int bend_present(void *handle, bend_present_rr *rr)
 	handle = zhandle;
 	sv_free(err_code);
 	sv_free(err_string);
-	sv_free(hits);
 	sv_free( (SV*) href);
 
 	return 0;
@@ -1756,7 +1749,7 @@ yazlog(arg)
     		STRLEN len;
 		char *ptr;
 		ptr = SvPV(arg, len);
-		yaz_log(YLOG_LOG, "%.*s", len, ptr);
+		yaz_log(YLOG_LOG, "%.*s", (int) len, ptr);
 
 int
 yaz_diag_srw_to_bib1(srw_code)
