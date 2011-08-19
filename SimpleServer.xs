@@ -1,30 +1,28 @@
-/*
- * $Id: SimpleServer.xs,v 1.86 2010-02-04 16:30:20 mike Exp $ 
- * ----------------------------------------------------------------------
- * 
- * Copyright (c) 2000-2004, Index Data.
+/* This file is part of simpleserver.
+ * Copyright (C) 2000-2011 Index Data.
+ * All rights reserved.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation, in whole or in part, for any purpose, is hereby granted,
- * provided that:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Index Data nor the names of its contributors
+ *       may be used to endorse or promote products derived from this
+ *       software without specific prior written permission.
  *
- * 1. This copyright and permission notice appear in all copies of the
- * software and its documentation. Notices of copyright or attribution
- * which appear at the beginning of any file must remain unchanged.
- *
- * 2. The name of Index Data or the individual authors may not be used to
- * endorse or promote products derived from this software without specific
- * prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS, IMPLIED, OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY
- * WARRANTY OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
- * IN NO EVENT SHALL INDEX DATA BE LIABLE FOR ANY SPECIAL, INCIDENTAL,
- * INDIRECT OR CONSEQUENTIAL DAMAGES OF ANY KIND, OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER OR
- * NOT ADVISED OF THE POSSIBILITY OF DAMAGE, AND ON ANY THEORY OF
- * LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
- * OF THIS SOFTWARE.
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "EXTERN.h"
@@ -34,8 +32,10 @@
 #include "XSUB.h"
 #include <assert.h>
 #include <yaz/backend.h>
+#include <yaz/facet.h>
 #include <yaz/log.h>
 #include <yaz/wrbuf.h>
+#include <yaz/pquery.h>
 #include <yaz/querytowrbuf.h>
 #include <stdio.h>
 #include <yaz/mutex.h>
@@ -395,23 +395,14 @@ static SV *translateOID(Odr_oid *x)
     }
 }
 
-
-static SV *apt2perl(Z_AttributesPlusTerm *at)
+static SV *attributes2perl(Z_AttributeList *list)
 {
-    SV *sv;
-    HV *hv;
     AV *av;
-
-    if (at->term->which != Z_Term_general)
-	fatal("can't handle RPN terms other than general");
-
-    sv = newObject("Net::Z3950::RPN::Term", (SV*) (hv = newHV()));
-    if (at->attributes) {
 	int i;
 	SV *attrs = newObject("Net::Z3950::RPN::Attributes",
 			      (SV*) (av = newAV()));
-	for (i = 0; i < at->attributes->num_attributes; i++) {
-	    Z_AttributeElement *elem = at->attributes->attributes[i];
+	for (i = 0; i < list->num_attributes; i++) {
+	    Z_AttributeElement *elem = list->attributes[i];
 	    HV *hv2;
 	    SV *tmp = newObject("Net::Z3950::RPN::Attribute",
 				(SV*) (hv2 = newHV()));
@@ -441,13 +432,25 @@ static SV *apt2perl(Z_AttributesPlusTerm *at)
 	    }
 	    av_push(av, tmp);
 	}
-	setMember(hv, "attributes", attrs);
-    }
-    setMember(hv, "term", newSVpv((char*) at->term->u.general->buf,
-				  at->term->u.general->len));
-    return sv;
+	return attrs;
 }
 
+static SV *f_Term_to_SV(Z_Term *term, Z_AttributeList *attributes)
+{
+	HV *hv;
+	SV *sv = newObject("Net::Z3950::RPN::Term", (SV*) (hv = newHV()));
+
+	if (term->which != Z_Term_general)
+		fatal("can't handle RPN terms other than general");
+
+        setMember(hv, "term", newSVpv((char*) term->u.general->buf,
+				  term->u.general->len));
+
+	if (attributes) {
+		setMember(hv, "attributes", attributes2perl(attributes));
+	}
+	return sv;
+}
 
 static SV *rpn2perl(Z_RPNStructure *s)
 {
@@ -475,8 +478,8 @@ static SV *rpn2perl(Z_RPNStructure *s)
 	}
 
 	case  Z_Operand_APT:
-	    return apt2perl(o->u.attributesPlusTerm);
-
+	    return f_Term_to_SV(o->u.attributesPlusTerm->term,
+			o->u.attributesPlusTerm->attributes);	
 	default:
 	    fatal("unknown RPN simple type %d", (int) o->which);
 	}
@@ -727,6 +730,175 @@ int bend_sort(void *handle, bend_sort_rr *rr)
 	return 0;
 }
 
+static SV *f_FacetField_to_SV(Z_FacetField *facet_field)
+{
+	HV *hv;
+	AV *av;
+	SV *terms;
+	int i;
+	SV *sv = newObject("Net::Z3950::FacetField", (SV *) (hv = newHV()));
+	if (facet_field->attributes) {
+                setMember(hv, "attributes",
+                     attributes2perl(facet_field->attributes));
+        }	     
+	terms = newObject("Net::Z3950::FacetTerms", (SV *) (av = newAV()));
+
+	for (i = 0; i < facet_field->num_terms; i++) {
+	    Z_Term *z_term = facet_field->terms[i]->term;
+            HV *hv;
+	    SV *sv_count = newSViv(*facet_field->terms[i]->count);
+            SV *sv_term;
+	    SV *tmp;
+	    if (z_term->which == Z_Term_general) {
+	        sv_term = newSVpv((char*) z_term->u.general->buf,
+	                           z_term->u.general->len);
+            } else if (z_term->which == Z_Term_characterString) {
+                sv_term = newSVpv(z_term->u.characterString,
+		                  strlen(z_term->u.characterString));
+            }
+	    tmp = newObject("Net::Z3950::FacetTerm", (SV *) (hv = newHV()));
+	    
+	    setMember(hv, "count", sv_count);
+	    setMember(hv, "term", sv_term);
+	    
+	    av_push(av, tmp);
+	}
+	setMember(hv, "terms", terms);
+	return sv;
+}
+
+static SV *f_FacetList_to_SV(Z_FacetList *facet_list)
+{
+	SV *sv = 0;
+	if (facet_list) {
+		AV *av;
+		int i;
+		sv = newObject("Net::Z3950::FacetList", (SV *) (av = newAV()));
+	
+		for (i = 0; i < facet_list->num; i++) {
+		       SV *sv = f_FacetField_to_SV(facet_list->elements[i]);
+		       av_push(av, sv);
+		}
+	}
+	return sv;
+}
+
+
+static void f_SV_to_FacetField(HV *facet_field_hv, Z_FacetField **fl, ODR odr)
+{
+	int i;
+	int num_terms, num_attributes;
+        SV **temp;
+	Z_AttributeList *attributes = odr_malloc(odr, sizeof(*attributes));
+
+        AV *sv_terms, *sv_attributes;
+
+	temp = hv_fetch(facet_field_hv, "attributes", 10, 1);
+	sv_attributes = (AV *) SvRV(*temp);
+	num_attributes = av_len(sv_attributes) + 1;
+	attributes->num_attributes = num_attributes;
+	attributes->attributes = (Z_AttributeElement **)
+	     odr_malloc(odr, sizeof(*attributes->attributes) * num_attributes);
+
+	for (i = 0; i < num_attributes; i++) {
+            HV *hv_elem = (HV*) SvRV(sv_2mortal(av_shift(sv_attributes)));
+            Z_AttributeElement *elem;
+	    elem = (Z_AttributeElement *) odr_malloc(odr, sizeof(*elem));
+	    attributes->attributes[i] = elem;
+
+	    elem->attributeSet = 0;
+
+  	    temp = hv_fetch(hv_elem, "attributeType", 13, 1);
+   	    elem->attributeType = odr_intdup(odr, SvIV(*temp));
+
+  	    temp = hv_fetch(hv_elem, "attributeValue", 14, 1);
+
+	    if (SvIOK(*temp)) {
+	    	    elem->which = Z_AttributeValue_numeric;
+	            elem->value.numeric = odr_intdup(odr, SvIV(*temp));
+            } else {
+                    STRLEN s_len;
+	            char *s_buf = SvPV(*temp, s_len);
+	            Z_ComplexAttribute *c = odr_malloc(odr, sizeof *c);
+	    	    elem->which = Z_AttributeValue_complex;
+		    elem->value.complex = c;
+
+		    c->num_list = 1;
+		    c->list = (Z_StringOrNumeric **) odr_malloc(odr,
+		          sizeof(*c->list));
+	            c->list[0] = (Z_StringOrNumeric *) odr_malloc(odr,
+                          sizeof(**c->list));
+	            c->list[0]->which = Z_StringOrNumeric_string;
+		    c->list[0]->u.string = odr_malloc(odr, s_len + 1);
+		    memcpy(c->list[0]->u.string, s_buf, s_len);
+		    c->list[0]->u.string[s_len] = '\0';
+		    c->num_semanticAction = 0;
+		    c->semanticAction = 0;
+            }
+	    hv_undef(hv_elem);
+        }
+
+	temp = hv_fetch(facet_field_hv, "terms", 5, 1);
+
+	sv_terms = (AV *) SvRV(*temp);
+	if (SvTYPE(sv_terms) == SVt_PVAV) {
+  	    num_terms = av_len(sv_terms) + 1;
+        } else {
+            num_terms = 0;
+	}
+	*fl = facet_field_create(odr, attributes, num_terms);
+	for (i = 0; i < num_terms; i++) {
+	    STRLEN s_len;
+            char *s_buf;
+            HV *hv_elem = (HV*) SvRV(sv_2mortal(av_shift(sv_terms)));
+	    
+	    Z_FacetTerm *facet_term =
+	     (Z_FacetTerm *) odr_malloc(odr, sizeof(*facet_term));
+	    (*fl)->terms[i] = facet_term;
+
+  	    temp = hv_fetch(hv_elem, "count", 5, 1);
+	    facet_term->count = odr_intdup(odr, SvIV(*temp));
+
+  	    temp = hv_fetch(hv_elem, "term", 4, 1);
+
+            s_buf = SvPV(*temp, s_len);
+	    facet_term->term = z_Term_create(odr, Z_Term_general, s_buf, s_len);
+	    hv_undef(hv_elem);
+	}
+}
+
+static void f_SV_to_FacetList(SV *sv, Z_OtherInformation **oip, ODR odr)
+{
+	AV *entries = (AV *) SvRV(sv);
+	int num_facets;
+	if (entries && SvTYPE(entries) == SVt_PVAV && 
+       		(num_facets = av_len(entries) + 1) > 0)
+ 	{
+            Z_OtherInformation *oi;
+            Z_OtherInformationUnit *oiu;
+	    Z_FacetList *facet_list = facet_list_create(odr, num_facets);
+	    int i;
+	    for (i = 0; i < num_facets; i++) {
+	        HV *facet_field = (HV*) SvRV(sv_2mortal(av_shift(entries)));
+	    	f_SV_to_FacetField(facet_field, &facet_list->elements[i], odr);
+		hv_undef(facet_field);
+	    }
+            oi = odr_malloc(odr, sizeof(*oi));
+            oiu = odr_malloc(odr, sizeof(*oiu));
+            oi->num_elements = 1;
+            oi->list = odr_malloc(odr, oi->num_elements * sizeof(*oi->list));
+            oiu->category = 0;
+            oiu->which = Z_OtherInfo_externallyDefinedInfo;
+            oiu->information.externallyDefinedInfo = odr_malloc(odr, sizeof(*oiu->information.externallyDefinedInfo));
+            oiu->information.externallyDefinedInfo->direct_reference = odr_oiddup(odr, yaz_oid_userinfo_facet_1);
+            oiu->information.externallyDefinedInfo->descriptor = 0;
+            oiu->information.externallyDefinedInfo->indirect_reference = 0;
+            oiu->information.externallyDefinedInfo->which = Z_External_userFacets;
+            oiu->information.externallyDefinedInfo->u.facetList = facet_list;
+            oi->list[0] = oiu;
+            *oip = oi;
+	}
+}
 
 int bend_search(void *handle, bend_search_rr *rr)
 {
@@ -740,6 +912,7 @@ int bend_search(void *handle, bend_search_rr *rr)
 	Zfront_handle *zhandle = (Zfront_handle *)handle;
 	CV* handler_cv = 0;
 	SV *rpnSV;
+	SV *facetSV;
 
 	dSP;
 	ENTER;
@@ -772,6 +945,11 @@ int bend_search(void *handle, bend_search_rr *rr)
 	if ((rpnSV = zquery2perl(rr->query)) != 0) {
 	    hv_store(href, "RPN", 3, rpnSV, 0);
 	}
+	facetSV = f_FacetList_to_SV(yaz_oi_get_facetlist(&rr->search_input));
+	if (facetSV) {
+	    hv_store(href, "INPUTFACETS", 11, facetSV, 0);
+	}
+
 	query = zquery2pquery(rr->query);
 	if (query)
 	{
@@ -809,6 +987,9 @@ int bend_search(void *handle, bend_search_rr *rr)
 
 	temp = hv_fetch(href, "HANDLE", 6, 1);
 	point = newSVsv(*temp);
+
+	temp = hv_fetch(href, "OUTPUTFACETS", 12, 1);
+	f_SV_to_FacetList(*temp, &rr->search_info, rr->stream);
 
 	hv_undef(href);
 	av_undef(aref);
@@ -1274,7 +1455,7 @@ int bend_scan(void *handle, bend_scan_rr *rr)
 	list = newAV();
 
 	/* RPN is better than TERM since it includes attributes */
-	if ((rpnSV = apt2perl(rr->term)) != 0) {
+	if ((rpnSV = f_Term_to_SV(rr->term->term, rr->term->attributes)) != 0) {
 	    setMember(href, "RPN", rpnSV);
 	}
 

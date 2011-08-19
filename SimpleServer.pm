@@ -1,31 +1,28 @@
+## This file is part of simpleserver
+## Copyright (C) 2000-2011 Index Data.
+## All rights reserved.
+## Redistribution and use in source and binary forms, with or without
+## modification, are permitted provided that the following conditions are met:
 ##
-##  Copyright (c) 2000-2006, Index Data.
+##     * Redistributions of source code must retain the above copyright
+##       notice, this list of conditions and the following disclaimer.
+##     * Redistributions in binary form must reproduce the above copyright
+##       notice, this list of conditions and the following disclaimer in the
+##       documentation and/or other materials provided with the distribution.
+##     * Neither the name of Index Data nor the names of its contributors
+##       may be used to endorse or promote products derived from this
+##       software without specific prior written permission.
 ##
-##  Permission to use, copy, modify, distribute, and sell this software and
-##  its documentation, in whole or in part, for any purpose, is hereby granted,
-##  provided that:
-##
-##  1. This copyright and permission notice appear in all copies of the
-##  software and its documentation. Notices of copyright or attribution
-##  which appear at the beginning of any file must remain unchanged.
-##
-##  2. The name of Index Data or the individual authors may not be used to
-##  endorse or promote products derived from this software without specific
-##  prior written permission.
-##
-##  THIS SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,
-##  EXPRESS, IMPLIED, OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY
-##  WARRANTY OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
-##  IN NO EVENT SHALL INDEX DATA BE LIABLE FOR ANY SPECIAL, INCIDENTAL,
-##  INDIRECT OR CONSEQUENTIAL DAMAGES OF ANY KIND, OR ANY DAMAGES
-##  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER OR
-##  NOT ADVISED OF THE POSSIBILITY OF DAMAGE, AND ON ANY THEORY OF
-##  LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
-##  OF THIS SOFTWARE.
-##
-##
-
-## $Id: SimpleServer.pm,v 1.50 2010-02-04 16:30:40 mike Exp $
+## THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
+## EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+## WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+## DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
+## DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+## (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+## LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+## ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+## (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+## THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 package Net::Z3950::SimpleServer;
 
@@ -39,7 +36,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.12';
+$VERSION = '1.14';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -121,6 +118,10 @@ package Net::Z3950::RPN::RSID;
 our @ISA = qw(Net::Z3950::RPN::Node);
 package Net::Z3950::RPN::Attributes;
 package Net::Z3950::RPN::Attribute;
+package Net::Z3950::FacetList;
+package Net::Z3950::FacetField;
+package Net::Z3950::FacetTerms;
+package Net::Z3950::FacetTerm;
 
 
 # Utility method for re-rendering Type-1 query back down to PQF
@@ -226,7 +227,7 @@ Z39.50 is a network protocol for searching remote databases and
 retrieving the results in the form of structured "records". It is widely
 used in libraries around the world, as well as in the US Federal Government.
 In addition, it is generally useful whenever you wish to integrate a number
-of different database systems around a shared, asbtract data model.
+of different database systems around a shared, abstract data model.
 
 The model of the module is simple: It implements a "generic" Z39.50
 server, which invokes callback functions supplied by you to search
@@ -371,7 +372,7 @@ mous hash. The structure is the following:
 
 				    ## Response parameters:
 
-	     ERR_CODE  =>  0,       ## Error code (0=Succesful search)
+	     ERR_CODE  =>  0,       ## Error code (0=Successful search)
 	     ERR_STR   =>  "",      ## Error string
 	     HITS      =>  0        ## Number of matches
 	  };
@@ -436,7 +437,7 @@ representing the OID of the query's top-level attribute set.
 
 =item C<query>
 
-Mandatory: a refererence to the RPN tree itself.
+Mandatory: a reference to the RPN tree itself.
 
 =back
 
@@ -517,8 +518,8 @@ a ``relation'' attribute, etc.
 =item C<attributeValue>
 
 An integer or string indicating the value of the attribute - for example, under
-BIB-1, if the attribute type is 1, then value 4 indictates a title
-search and 7 indictates an ISBN search; but if the attribute type is
+BIB-1, if the attribute type is 1, then value 4 indicates a title
+search and 7 indicates an ISBN search; but if the attribute type is
 2, then value 4 indicates a ``greater than or equal'' search, and 102
 indicates a relevance match.
 
@@ -567,7 +568,7 @@ records are expected to be retrieved. If on the other hand, large result
 sets are likely to occur, the implementation of a reasonable present
 handler can gain performance significantly.
 
-The informations exchanged between client and present handle are:
+The information exchanged between client and present handle is:
 
   $args = {
 				    ## Client/server request:
@@ -580,7 +581,7 @@ The informations exchanged between client and present handle are:
 	     NUMBER    =>  yyy,	    ## Number of requested records
 
 
-				    ## Respons parameters:
+				    ## Response parameters:
 
 	     HITS      =>  zzz,	    ## Number of returned records
 	     ERR_CODE  =>  0,	    ## Error code
@@ -698,7 +699,7 @@ between two adjacent entries in the response.
 
 A better alternative to the TERM member is the the RPN
 member, which is a reference to a Net::Z3950::RPN::Term object
-representing the scan cloause.  The structure of that object is the
+representing the scan clause.  The structure of that object is the
 same as for Term objects included as part of the RPN tree passed to
 search handlers.  This is more useful than the simple TERM because it
 includes attributes (e.g. access points associated with the term),
@@ -706,7 +707,7 @@ which are discarded by the TERM element.
 
 =head2 Close handler
 
-The argument hash recieved by the close handler has two elements only:
+The argument hash received by the close handler has two elements only:
 
   $args = {
 				    ## Server provides:
@@ -721,7 +722,7 @@ or something similar, this is the place to do it.
 
 =head2 Delete handler
 
-The argument hash recieved by the delete handler has the following elements:
+The argument hash received by the delete handler has the following elements:
 
   $args = {
 				    ## Client request:
@@ -745,7 +746,7 @@ http://www.loc.gov/z3950/agency/markup/05.html#Delete-list-statuses1
 
 =head2 Sort handler
 
-The argument hash recieved by the sort handler has the following elements:
+The argument hash received by the sort handler has the following elements:
 
 	$args = {
 					## Client request:
@@ -815,7 +816,7 @@ sort of title is requested.
 
 Precisely why all of the above is so is not clear, but goes some way
 to explain why, in the Z39.50 world, the developers of the standard
-are not so much worshipped as blamed.
+are not so much worshiped as blamed.
 
 The backend function should set STATUS to 0 on success, 1 for "partial
 success" (don't ask) or 2 on failure, in which case ERR_CODE and
@@ -888,7 +889,7 @@ Mike Taylor (indexdata.com).
 
 =head1 COPYRIGHT AND LICENCE
 
-Copyright (C) 2000-2009 by Index Data.
+Copyright (C) 2000-2011 by Index Data.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.4 or,

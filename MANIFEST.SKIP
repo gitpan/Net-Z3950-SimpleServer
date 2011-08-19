@@ -1,5 +1,6 @@
-.cvsignore
-CVS
+.gitignore
+.git
+IDMETA
 TODO
 archive
 debian
