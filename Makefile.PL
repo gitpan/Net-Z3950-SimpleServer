@@ -2,7 +2,7 @@ use ExtUtils::MakeMaker;
 
 # Use: perl Makefile.PL OPTIMIZE="-O0 -g -Wdeclaration-after-statement"
 
-my $yazconf = "../yaz/yaz-config";
+my $yazconf = "yaz-config";
 my $yazver = `$yazconf --version`;
 my $yazinc = `$yazconf --cflags servers`;
 my $yazlibs = `$yazconf --libs server`;
