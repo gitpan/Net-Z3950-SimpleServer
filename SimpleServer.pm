@@ -1,5 +1,5 @@
 ## This file is part of simpleserver
-## Copyright (C) 2000-2011 Index Data.
+## Copyright (C) 2000-2013 Index Data.
 ## All rights reserved.
 ## Redistribution and use in source and binary forms, with or without
 ## modification, are permitted provided that the following conditions are met:
@@ -36,7 +36,7 @@ require AutoLoader;
 
 @ISA = qw(Exporter AutoLoader DynaLoader);
 @EXPORT = qw( );
-$VERSION = '1.15';
+$VERSION = '1.16';
 
 bootstrap Net::Z3950::SimpleServer $VERSION;
 
@@ -96,7 +96,9 @@ sub launch_server {
 	if (defined($self->{DELETE})) {
 		set_delete_handler($self->{DELETE});
 	}
-
+	if (defined($self->{START})) {
+		set_start_handler($self->{START});
+	}
 	start_server(@args);
 }
 
@@ -242,6 +244,7 @@ environments) whenever a new connection is received.
 The programmer can specify subroutines to take care of the following type
 of events:
 
+  - Start service (called once).
   - Initialize request
   - Search request
   - Present request
@@ -264,6 +267,7 @@ The Perl programmer specifies the event handlers for the server by
 means of the SimpleServer object constructor
 
   my $z = new Net::Z3950::SimpleServer(
+                        START   =>      \&my_start_handler,
 			INIT	=>	\&my_init_handler,
 			CLOSE	=>	\&my_close_handler,
 			SEARCH	=>	\&my_search_handler,
@@ -306,6 +310,23 @@ application invocation: <http://indexdata.com/yaz/doc/server.invocation.tkl>
 
 In particular, you need to use the -T switch to start your SimpleServer
 in threaded mode.
+
+=head2 Start handler
+
+The start handler is called when service is started. The argument hash
+passed to the start handler has the form
+
+  $args = {
+	     CONFIG =>  "default-config" ## GFS config (as given by -c)
+	  };
+
+
+The purpose of the start handler is to read the configuration file
+for the Generic Frontend Server . This is specified by option -c.
+If -c is omitted, the configuration file is set to "default-config".
+
+The start handler is optional. It is supported in Simpleserver 1.16 and
+later.
 
 =head2 Init handler
 
@@ -889,7 +910,7 @@ Mike Taylor (indexdata.com).
 
 =head1 COPYRIGHT AND LICENCE
 
-Copyright (C) 2000-2011 by Index Data.
+Copyright (C) 2000-2013 by Index Data.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.4 or,
