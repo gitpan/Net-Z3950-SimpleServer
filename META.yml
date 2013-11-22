@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Net-Z3950-SimpleServer
-version:            1.16
+version:            1.19
 abstract:           ~
 author:  []
 license:            unknown
